@@ -1,5 +1,7 @@
 # xcontour
 
+[![DOI](https://zenodo.org/badge/473022002.svg)](https://zenodo.org/badge/latestdoi/473022002)
+
 ![diagnostic analyses in contour-based coordinate](./pics/sorting.jpg)
 
 ## 1. Introduction
