@@ -39,7 +39,8 @@ class Contour2D(object):
                 https://db0nus869y26v.cloudfront.net/en/Arakawa_grids
             Others are not well tested.
         increase : bool
-            Contour increase with the index of equivalent dimension or not.
+            Contour increase with the index of equivalent dimension or not
+            after the sorting.
         lt : bool
             If true, less than a contour is defined as inside the contour.
         check_mono: bool
@@ -97,29 +98,29 @@ class Contour2D(object):
         
         if self.lt:
             if eqDimIncre == self.increase:
-                if self.increase:
-                    print('case 1: increase & lt')
-                else:
-                    print('case 1: decrease & lt')
+                # if self.increase:
+                #     print('case 1: increase & lt')
+                # else:
+                #     print('case 1: decrease & lt')
                 mskVar = mask.where(ctrVar < ctr)
             else:
-                if self.increase:
-                    print('case 2: increase & lt')
-                else:
-                    print('case 2: decrease & lt')
+                # if self.increase:
+                #     print('case 2: increase & lt')
+                # else:
+                #     print('case 2: decrease & lt')
                 mskVar = mask.where(ctrVar > ctr)
         else:
             if eqDimIncre == self.increase:
-                if self.increase:
-                    print('case 3: increase & gt')
-                else:
-                    print('case 3: decrease & gt')
+                # if self.increase:
+                #     print('case 3: increase & gt')
+                # else:
+                #     print('case 3: decrease & gt')
                 mskVar = mask.where(ctrVar > ctr)
             else:
-                if self.increase:
-                    print('case 4: increase & gt')
-                else:
-                    print('case 4: decrease & gt')
+                # if self.increase:
+                #     print('case 4: increase & gt')
+                # else:
+                #     print('case 4: decrease & gt')
                 mskVar = mask.where(ctrVar < ctr)
         
         tbl = abs(self.grid.integrate(mskVar, self.dimNs).rename('AeqCTbl')) \
@@ -468,11 +469,43 @@ class Contour2D(object):
         dfVar  =  var.differentiate('contour')
         dfArea = area.differentiate('contour')
         
-        dVardA = (dfVar / dfArea).rename('d'+var.name+'dA')
+        dVardA = dfVar / dfArea
+        
+        if var.name is None:
+            return dVardA.rename('dvardA')
+        else:
+            return dVardA.rename('d'+var.name+'dA')
+    
 
-        return dVardA
+    def cal_along_contour_mean(self, contour, integrand, area=None):
+        """
+        Calculate along-contour average.
 
-
+        Parameters
+        ----------
+        contour: xarray.DataArray
+            A given contour levels.
+        integrand: xarray.DataArray
+            A given integrand to be averaged.
+        
+        Returns
+        ----------
+        lm : xarray.DataArray
+            Along-contour (Lagrangian) mean of the integrand.
+        """
+        intA = self.cal_integral_within_contours(contour, integrand=integrand)
+        
+        if area is None:
+            area = self.cal_integral_within_contours(contour)
+        
+        lmA  = self.cal_gradient_wrt_area(intA, area)
+        
+        if integrand.name is None:
+            return lmA.rename('lm')
+        else:
+            return lmA.rename('lm'+integrand.name)
+    
+    
     def cal_sqared_equivalent_length(self, dgrdSdA, dqdA):
         """
         Calculate squared equivalent length.
@@ -494,7 +527,7 @@ class Contour2D(object):
         return Leq2
 
 
-    def cal_local_wave_activity(self, q, Q, mask_idx=None):
+    def cal_local_wave_activity(self, q, Q, mask_idx=None, part='all'):
         """
         Calculate local finite-amplitude wave activity density.
         Reference: Huang and Nakamura 2016, JAS
@@ -507,24 +540,31 @@ class Contour2D(object):
             The sorted tracer field along the equivalent dimension.
         mask_idx: list of int
             Return masks at the indices of equivalent dimension.
+        part: str
+            The parts over which the integration is taken.  Available options
+            are ['all', 'upper', 'lower'], corresponding to all, W+, and W-
+            regions defined in Huang and Nakamura (2016, JAS)
         
         Returns
         ----------
         lwa : xarray.DataArray
-            Local finite-amplitude wave activity.
+            Local finite-amplitude wave activity, corresponding to part.
         contours : list
             A list of Q-contour corresponding to mask_idx.
         masks : list
             A list of mask corresponding to mask_idx.
         """
-        wei = self.grid.get_metric(q, self.dimNs).squeeze()
-        wei = wei / wei.max() # normalize between [0-1], similar to cos(lat)
-        
-        q = q.squeeze()
+        wei  = self.grid.get_metric(q, self.dimNs).squeeze()
+        wei  = wei / wei.max() # normalize between [0-1], similar to cos(lat)
+        part = part.lower()
+        # q2 = q.squeeze()
         
         eqDim = q[self.dimEqV]
         eqDimLen = len(eqDim)
         tmp = []
+        
+        if part.lower() not in ['all', 'upper', 'lower']:
+            raise Exception('invalid part, should be in [\'all\', \'upper\', \'lower\']')
         
         # equivalent dimension is increasing or not
         coord_incre = True
@@ -563,9 +603,24 @@ class Contour2D(object):
                 contours.append(Q.isel({self.dimEqV:j}))
                 masks.append(mask3)
             
-            # lwa = (qe * mask3 * wei *
+            # select part over which integration is performed
+            if part == 'all':
+                maskFinal = mask3
+            elif part == 'upper':
+                if self.increase:
+                    maskFinal = mask3.where(mask3>0)
+                else:
+                    maskFinal = mask3.where(mask3<0)
+            else:
+                if self.increase:
+                    maskFinal = mask3.where(mask3<0)
+                else:
+                    maskFinal = mask3.where(mask3>0)
+            
+            # perform area-weighted conditional integration
+            # lwa = (qe * maskFinal * wei *
             #        self.grid.get_metric(qe, self.dimEqN)).sum(self.dimEqV)
-            lwa = -self.grid.integrate(qe * mask3 * wei, self.dimEqN)
+            lwa = -self.grid.integrate(qe * maskFinal * wei, self.dimEqN)
             
             tmp.append(lwa)
         
@@ -578,7 +633,7 @@ class Contour2D(object):
             return LWA.rename('LWA')
 
 
-    def cal_local_APE(self, q, Q, mask_idx=None):
+    def cal_local_APE(self, q, Q, mask_idx=None, part='all'):
         """
         Calculate local available potential energy (APE) density.  This is
         mathematically identical to local wave activity density.
@@ -590,6 +645,12 @@ class Contour2D(object):
             A tracer field.
         Q: xarray.DataArray
             The sorted tracer field.
+        mask_idx: list of int
+            Return masks at the indices of equivalent dimension.
+        part: str
+            The parts over which the integration is taken.  Available options
+            are ['all', 'upper', 'lower'], corresponding to all, W+, and W-
+            regions defined in Huang and Nakamura (2016, JAS)
         
         Returns
         ----------
@@ -602,11 +663,11 @@ class Contour2D(object):
         """
         if mask_idx is not None:
             LWA, contours, masks = \
-                self.cal_local_wave_activity(q, Q, mask_idx)
+                self.cal_local_wave_activity(q, Q, mask_idx, part=part)
             
             return LWA.rename('LAPE'), contours, masks
         else:
-            return self.cal_local_wave_activity(q, Q).rename('LAPE')
+            return self.cal_local_wave_activity(q, Q, None, part).rename('LAPE')
 
 
     def cal_normalized_Keff(self, Leq2, Lmin, mask=1e5):
@@ -780,7 +841,7 @@ class Table(object):
         re = xr.apply_ufunc(_interp1d,
                                 values, self._table, self._coord,
                                 kwargs={'inc': self._incVl},
-                                # dask='allowed',
+                                dask='allowed',
                                 input_core_dims = iDims,
                                 output_core_dims= oDims,
                                 output_dtypes=[self._table.dtype],

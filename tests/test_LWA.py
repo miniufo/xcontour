@@ -73,8 +73,15 @@ ds_latEq = analysis.interp_to_dataset(preLats, latEq, ds_contour)
 
 
 #%% calculate local finite-amplitude wave activity
-lwa, ctrs, masks = analysis.cal_local_wave_activity(tracer, ds_latEq.absolute_vorticity,
-                                                    mask_idx=[37,125,170,213])
+lwaA, ctrs, masks = analysis.cal_local_wave_activity(tracer, ds_latEq.absolute_vorticity,
+                                                    mask_idx=[37,125,170,213],
+                                                    part='all')
+lwaU, ctrs, masks = analysis.cal_local_wave_activity(tracer, ds_latEq.absolute_vorticity,
+                                                    mask_idx=[37,125,170,213],
+                                                    part='upper')
+lwaL, ctrs, masks = analysis.cal_local_wave_activity(tracer, ds_latEq.absolute_vorticity,
+                                                    mask_idx=[37,125,170,213],
+                                                    part='lower')
 
 
 
