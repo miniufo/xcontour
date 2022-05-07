@@ -1,6 +1,7 @@
 # xcontour
 
 [![DOI](https://zenodo.org/badge/473022002.svg)](https://zenodo.org/badge/latestdoi/473022002)
+![GitHub](https://img.shields.io/github/license/miniufo/xcontour)
 
 ![diagnostic analyses in contour-based coordinate](./pics/sorting.jpg)
 
