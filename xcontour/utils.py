@@ -152,7 +152,8 @@ def add_latlon_metrics(dset, dims=None, boundary=None):
              ('Y' ,   ): ['dyG', 'dyF', 'dyC', 'dyU'], # Y distances
              ('X', 'Y'): ['rAw', 'rAs', 'rA' , 'rAz']}
     
-    grid._assign_metrics(metrics)
+    for key, value in metrics.items():
+        grid.set_metrics(key, value)
     
     return ds, grid
 
@@ -220,7 +221,8 @@ def add_MITgcm_missing_metrics(dset, periodic=None, boundary=None):
         ('X', 'Y'): ['rAw', 'rAs', 'rA' , 'rAz'], # Areas in X-Y plane
         ('X', 'Z'): ['yA']} # Areas in X-Z plane
     
-    grid._assign_metrics(metrics)
+    for key, value in metrics.items():
+        grid.set_metrics(key, value)
     
     return dset, grid
 

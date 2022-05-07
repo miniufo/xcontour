@@ -46,7 +46,7 @@ b = (alpha * (T - T0) * g).rename('buoyancy')
 
 N  = 121           # increase the contour number may get non-monotonic A(q) relation
 increase = False   # Y-index increases with depth
-lt = True          # northward of PV contours (larger than) is inside the contour
+lt = False          # northward of PV contours (larger than) is inside the contour
                    # change this should not change the result of Keff, but may alter
                    # the values at boundaries
 dtype = np.float32 # use float32 to save memory

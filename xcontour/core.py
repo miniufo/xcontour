@@ -588,7 +588,7 @@ class Contour2D(object):
             qe = q - Q.isel({self.dimEqV:j})
             
             # above or below the reference coordinate surface
-            m = eqDim>eqDim.values[j] if coord_incre else eqDim<eqDim.values[j]
+            m = eqDim>=eqDim.values[j] if coord_incre else eqDim<=eqDim.values[j]
             
             if self.increase:
                 mask1 = xr.where(qe>0, -1, 0)

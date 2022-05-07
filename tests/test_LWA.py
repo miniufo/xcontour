@@ -76,12 +76,20 @@ ds_latEq = analysis.interp_to_dataset(preLats, latEq, ds_contour)
 lwaA, ctrs, masks = analysis.cal_local_wave_activity(tracer, ds_latEq.absolute_vorticity,
                                                     mask_idx=[37,125,170,213],
                                                     part='all')
-lwaU, ctrs, masks = analysis.cal_local_wave_activity(tracer, ds_latEq.absolute_vorticity,
-                                                    mask_idx=[37,125,170,213],
-                                                    part='upper')
-lwaL, ctrs, masks = analysis.cal_local_wave_activity(tracer, ds_latEq.absolute_vorticity,
-                                                    mask_idx=[37,125,170,213],
-                                                    part='lower')
+# lwaU, ctrs, masks = analysis.cal_local_wave_activity(tracer, ds_latEq.absolute_vorticity,
+#                                                     mask_idx=[37,125,170,213],
+#                                                     part='upper')
+# lwaL, ctrs, masks = analysis.cal_local_wave_activity(tracer, ds_latEq.absolute_vorticity,
+#                                                     mask_idx=[37,125,170,213],
+#                                                     part='lower')
 
+#%% check masks
+
+m = masks[0]
+print(-m.where(m<0).sum().values)
+print( m.where(m>0).sum().values)
+print(grid.integrate(-m.where(m<0), ['X','Y']).values)
+print(grid.integrate( m.where(m>0), ['X','Y']).values)
+print(grid.get_metric(m, ['X','Y']).sum().values)
 
 
