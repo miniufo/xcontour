@@ -6,6 +6,7 @@ Created on 2020.02.04
 Copyright 2018. All rights reserved. Use is subject to license terms.
 '''
 import numpy as np
+import numba as nb
 import xarray as xr
 from xgcm import Grid
 from xgcm.autogenerate import generate_grid_ds
@@ -32,6 +33,8 @@ dimXList = ['lon', 'longitude', 'LON', 'LONGITUDE', 'geolon', 'GEOLON',
             'xt_ocean']
 dimYList = ['lat', 'latitude' , 'LAT', 'LATITUDE' , 'geolat', 'GEOLAT',
             'yt_ocean']
+dimZList = ['lev', 'level', 'LEV', 'LEVEL', 'pressure', 'PRESSURE',
+            'depth', 'DEPTH']
 
 
 
@@ -44,7 +47,7 @@ def add_latlon_metrics(dset, dims=None, boundary=None):
     dset : xarray.Dataset
         A dataset open from a file
     dims : dict
-        Dimension pair in a dict, e.g., {'lat':'latitude', 'lon':'longitude'}
+        Dimension pair in a dict, e.g., {'Y':'latitude', 'X':'longitude'}
     boundary : dict
         Default boundary conditions applied to each coordinate
 
@@ -55,35 +58,60 @@ def add_latlon_metrics(dset, dims=None, boundary=None):
     grid : xgcm.Grid
         The grid with appropriated metrics
     """
-    lon, lat = None, None
+    lon, lat, lev = None, None, None
     
     if dims is None:
         for dim in dimXList:
-            if dim in dset or dim in dset.coords:
+            if dim in dset.dims:
                 lon = dim
                 break
 
         for dim in dimYList:
-            if dim in dset or dim in dset.coords:
+            if dim in dset.dims:
                 lat = dim
+                break
+
+        for dim in dimZList:
+            if dim in dset.dims:
+                lev = dim
                 break
 
         if lon is None or lat is None:
             raise Exception('unknown dimension names in dset, should be in '
                             + str(dimXList + dimYList))
     else:
-        lon, lat = dims['lon'], dims['lat']
+        lon = dims['X'] if 'X' in dims else None
+        lat = dims['Y'] if 'Y' in dims else None
+        lev = dims['Z'] if 'Z' in dims else None
     
-    ds = generate_grid_ds(dset, {'X':lon, 'Y':lat})
+    if lev is None:
+        ds = generate_grid_ds(dset, {'X':lon, 'Y':lat})
+    else:
+        ds = generate_grid_ds(dset, {'X':lon, 'Y':lat, 'Z':lev})
     
     coords = ds.coords
     
+    BCx, BCy, BCz = 'extend', 'extend', 'extend'
+    
+    if boundary is not None:
+        BCx = boundary['X'] if 'X' in boundary else 'extend'
+        BCy = boundary['Y'] if 'Y' in boundary else 'extend'
+        BCz = boundary['Z'] if 'Z' in boundary else 'extend'
+    
     if __is_periodic(coords[lon], 360.0):
         periodic = 'X'
-        grid = Grid(ds, periodic=periodic, boundary={'Y': 'extend'})
+        
+        if lev is None:
+            grid = Grid(ds, periodic=[periodic], boundary={'Y': BCy})
+        else:
+            grid = Grid(ds, periodic=[periodic], boundary={'Z':BCz, 'Y': BCy})
     else:
         periodic = []
-        grid = Grid(ds, boundary={'Y': 'extend', 'X': 'extend'})
+        
+        if lev is None:
+            grid = Grid(ds, periodic=False, boundary={'Y': BCy, 'X': BCx})
+        else:
+            grid = Grid(ds, periodic=False, boundary={'Z': BCz, 'Y': BCy, 'X': BCx})
     
     
     lonC = ds[lon]
@@ -92,14 +120,16 @@ def add_latlon_metrics(dset, dims=None, boundary=None):
     latG = ds[lat + '_left']
     
     if 'X' in periodic:
-        dlonC = grid.diff(lonC, 'X', boundary_discontinuity=360)
-        dlonG = grid.diff(lonG, 'X', boundary_discontinuity=360)
+        # dlonC = grid.diff(lonC, 'X', boundary_discontinuity=360)
+        # dlonG = grid.diff(lonG, 'X', boundary_discontinuity=360)
+        dlonC = grid.diff(lonC, 'X')
+        dlonG = grid.diff(lonG, 'X')
     else:
-        dlonC = grid.diff(lonC, 'X', boundary='extrapolate')
-        dlonG = grid.diff(lonG, 'X', boundary='extrapolate')
+        dlonC = grid.diff(lonC, 'X', boundary='extend')
+        dlonG = grid.diff(lonG, 'X', boundary='extend')
     
-    dlatC = grid.diff(latC, 'Y', boundary='extrapolate')
-    dlatG = grid.diff(latG, 'Y', boundary='extrapolate')
+    dlatC = grid.diff(latC, 'Y')
+    dlatG = grid.diff(latG, 'Y')
     
     coords['dxG'], coords['dyG'] = __dll_dist(dlonG, dlatG, lonG, latG)
     coords['dxC'], coords['dyC'] = __dll_dist(dlonC, dlatC, lonC, latC)
@@ -112,6 +142,28 @@ def add_latlon_metrics(dset, dims=None, boundary=None):
     coords['rAw'] = ds['dyG'] * ds['dxC']
     coords['rAs'] = ds['dyC'] * ds['dxG']
     coords['rAz'] = ds['dyU'] * ds['dxV']
+    
+    if lev is not None:
+        levC = ds[lev].values
+        tmp  = np.diff(levC)
+        tmp  = np.concatenate([[(levC[0]-tmp[0])], levC])
+        levG = tmp[:-1]
+        delz = np.diff(tmp)
+        
+        ds[lev + '_left'] = levG
+        coords['drF'] = xr.DataArray(delz, dims=lev, coords={lev: levC})
+        coords['drG'] = xr.DataArray(np.concatenate([[delz[0]/2], delz[1:-1],
+                                      [delz[-1]/2]]), dims=lev+'_left',
+                                      coords={lev+'_left': levG})
+        
+        metrics={('X',    ): ['dxG', 'dxF', 'dxC', 'dxV'], # X distances
+                 ('Y' ,   ): ['dyG', 'dyF', 'dyC', 'dyU'], # Y distances
+                 ('Z' ,   ): ['drG', 'drF'],               # Z distances
+                 ('X', 'Y'): ['rAw', 'rAs', 'rA' , 'rAz']}
+    else:
+        metrics={('X',    ): ['dxG', 'dxF', 'dxC', 'dxV'], # X distances
+                 ('Y' ,   ): ['dyG', 'dyF', 'dyC', 'dyU'], # Y distances
+                 ('X', 'Y'): ['rAw', 'rAs', 'rA' , 'rAz']}
     
     # print('lonC', lonC.dims)
     # print('latC', latC.dims)
@@ -137,39 +189,26 @@ def add_latlon_metrics(dset, dims=None, boundary=None):
     # print('rAw', coords['rAw'].dims)
     # print('rAs', coords['rAs'].dims)
     
-    # if 'X' in periodic:
-    #     coords['rAz'] = grid.interp(grid.interp(coords['rAc'], 'X',
-    #                                             boundary_discontinuity=360),
-    #                                 'Y', boundary='fill', fill_value=na)
-    # else:
-    #     coords['rAz'] = grid.interp(grid.interp(coords['rAc'], 'X',
-    #                                             boundary='fill', fill_value=na),
-    #                                 'Y', boundary='fill', fill_value=na)
-    # print(coords['rAc'])
-    # print(coords['rAz'])
-    
-    metrics={('X',    ): ['dxG', 'dxF', 'dxC', 'dxV'], # X distances
-             ('Y' ,   ): ['dyG', 'dyF', 'dyC', 'dyU'], # Y distances
-             ('X', 'Y'): ['rAw', 'rAs', 'rA' , 'rAz']}
-    
     for key, value in metrics.items():
         grid.set_metrics(key, value)
     
     return ds, grid
 
 
-def add_MITgcm_missing_metrics(dset, periodic=None, boundary=None):
+def add_MITgcm_missing_metrics(dset, periodic=None, boundary=None, partial_cell=True):
     """
     Infer missing metrics from MITgcm output files.
 
     Parameters
     ----------
-    dset : xarray.Dataset
+    dset: xarray.Dataset
         A dataset open from a file
-    periodic : str
+    periodic: str
         Which coordinate is periodic
-    boundary : dict
+    boundary: dict
         Default boundary conditions applied to each coordinate
+    partial_cell: bool
+        Turn on the partial-cell or not (default is on).
 
     Return
     -------
@@ -182,11 +221,11 @@ def add_MITgcm_missing_metrics(dset, periodic=None, boundary=None):
     grid   = Grid(dset, periodic=periodic, boundary=boundary)
     
     if 'drW' not in coords: # vertical cell size at u point
-        coords['drW'] = dset.hFacW * dset.drF
+        coords['drW'] = dset.hFacW * dset.drF if partial_cell else dset.drF
     if 'drS' not in coords: # vertical cell size at v point
-        coords['drS'] = dset.hFacS * dset.drF
+        coords['drS'] = dset.hFacS * dset.drF if partial_cell else dset.drF
     if 'drC' not in coords: # vertical cell size at tracer point
-        coords['drC'] = dset.hFacC * dset.drF
+        coords['drC'] = dset.hFacC * dset.drF if partial_cell else dset.drF
     if 'drG' not in coords: # vertical cell size at tracer point
         coords['drG'] = dset.Zl - dset.Zl + dset.drC.values[:-1]
         # coords['drG'] = xr.DataArray(dset.drC[:-1].values, dims='Zl',
@@ -207,7 +246,8 @@ def add_MITgcm_missing_metrics(dset, periodic=None, boundary=None):
         coords['maskZ'] = coords['hFacZ']
         
     if 'yA' not in coords:
-        coords['yA'] = dset.drF * dset.hFacC * dset.dxF
+        coords['yA'] = dset.drF * dset.hFacC * dset.dxF if partial_cell \
+                  else dset.drF * dset.dxF
     
     # Calculate vertical distances located on the cellboundary
     # ds.coords['dzC'] = grid.diff(ds.depth, 'Z', boundary='extrapolate')
@@ -216,9 +256,9 @@ def add_MITgcm_missing_metrics(dset, periodic=None, boundary=None):
     
     metrics = {
         ('X',)    : ['dxG', 'dxF', 'dxC', 'dxV'], # X distances
-        ('Y',)    : ['dyG', 'dyF', 'dyC', 'dyU'], # Y distances
+        # ('Y',)    : ['dyG', 'dyF', 'dyC', 'dyU'], # Y distances
         ('Z',)    : ['drW', 'drS', 'drC', 'drF', 'drG'], # Z distances
-        ('X', 'Y'): ['rAw', 'rAs', 'rA' , 'rAz'], # Areas in X-Y plane
+        # ('X', 'Y'): ['rAw', 'rAs', 'rA' , 'rAz'], # Areas in X-Y plane
         ('X', 'Z'): ['yA']} # Areas in X-Z plane
     
     for key, value in metrics.items():
@@ -273,7 +313,7 @@ def latitude_lengths_at(lats):
     return Lmin
 
 
-def contour_enclosed_area_np(verts):
+def contour_area(verts):
     """
     Compute the area enclosed by a contour.  Copied from
     https://github.com/rabernat/floater/blob/master/floater/rclv.py
@@ -300,90 +340,52 @@ def contour_enclosed_area_np(verts):
     return abs(area_elements.sum())/2.0
 
 
-def contour_enclosed_area_py(verts):
-    """
-    Compute the area enclosed by a contour.  Copied from
-    https://arachnoid.com/area_irregular_polygon/
+# @nb.jit(nopython=True, cache=False)
+def contour_length(segments, xdef, ydef, latlon=True, disp=False):
+    """Compute the length of a contour.
     
     Parameters
     ----------
-    verts : array_like
-        2D shape (N,2) array of vertices. Uses scikit image convetions
-        (j,i indexing)
+    segments: numpy.array
+        Segments of a single contour position returned by
+        `measure.find_contours`.
+    xdef : numpy.array
+        X-coordinates
+    ydef : numpy.array
+        Y-coordinates
+    latlon : boolean
+        Is coordinates latlon in radian or cartesian
         
     Returns
     ----------
-    area : float
-        Area of polygon enclosed by verts. Sign is determined by vertex
-        order (cc vs ccw)
+    Perimeter: float
+        Perimeter of a contour.
     """
-    a = 0
-    ox, oy = verts[0]
-
-    for x, y in verts[1:]:
-        a += (x * oy - y * ox)
-        ox, oy = x, y
-
-    return a / 2
-
-
-def contour_length_np(verts):
-    """
-    Compute the length of a contour.  Copied from
-    https://github.com/rabernat/floater/blob/master/floater/rclv.py
+    yidx = np.arange(len(ydef))
+    xidx = np.arange(len(xdef))
     
-    Parameters
-    ----------
-    verts : array_like
-        2D shape (N,2) array of vertices. Uses scikit image convetions
-        (j,i indexing)
-        
-    Returns
-    ----------
-    Perimeter : float
-        Perimeter of a contour by verts.
-    """
-    verts_roll = np.roll(verts, 1, axis=0)
+    total = 0
     
-    diff = verts_roll - verts
+    if latlon:
+        for segment in segments:
+            dypos = np.interp(segment[:,0], yidx, ydef)
+            dxpos = np.interp(segment[:,1], xidx, xdef)
+            
+            total = total + __segment_length_latlon(dxpos, dypos)
+    else:
+        for segment in segments:
+            dypos = np.interp(segment[:,0], yidx, ydef)
+            dxpos = np.interp(segment[:,1], xidx, xdef)
+            
+            total = total + __segment_length_cartesian(dxpos, dypos)
     
-    p = np.sum(np.hypot(diff[:,0], diff[:,1]))
-    
-    return p
-
-
-def contour_length_py(verts):
-    """
-    Compute the length of a contour.  Copied from
-    https://arachnoid.com/area_irregular_polygon/
-    
-    Parameters
-    ----------
-    verts : array_like
-        2D shape (N,2) array of vertices. Uses scikit image convetions
-        (j,i indexing)
-        
-    Returns
-    ----------
-    Perimeter : float
-        Perimeter of a contour by verts.
-    """
-    p = 0
-    ox, oy = verts[0]
-    
-    for x, y in verts[1:]:
-        p += abs((x - ox) + (y - oy) * 1j)
-        ox, oy = x, y
-    
-    return p
-
-
-def is_contour_closed(con):
-    """
-    Whether the contour is a closed one or intersect with boundaries.
-    """
-    return np.all(con[0] == con[-1])
-
+    if total == 0:
+        return np.nan
+    else:
+        if latlon:
+            return total * Rearth
+        else:
+            return total
 
 
 """
@@ -443,6 +445,65 @@ def __is_periodic(coord, period):
 		
     return True
 
+
+# @nb.jit(nopython=True, cache=False)
+def __segment_length_latlon(xpos, ypos):
+    n = len(xpos)
+    
+    if n <= 1:
+        return np.nan
+    
+    total = 0
+    
+    for i in range(n-1):
+        total += __geodist(xpos[i], xpos[i+1], ypos[i], ypos[i+1])
+    
+    return total
+
+
+@nb.jit(nopython=True, cache=False)
+def __segment_length_cartesian(xpos, ypos):
+    n = len(xpos)
+    
+    if n <= 1:
+        return np.nan
+    
+    total = 0
+    
+    for i in range(n-1):
+        total += np.hypot(xpos[i]-xpos[i+1], ypos[i]-ypos[i+1])
+    
+    return total
+
+
+@nb.jit(nopython=True, cache=False)
+def __geodist(lon1, lon2, lat1, lat2):
+    """Calculate great-circle distance on a sphere.
+
+    Parameters
+    ----------
+    lon1: float
+        Longitude for point 1 in radian.
+    lon2: float
+        Longitude for point 2 in radian.
+    lat1: float
+        Latitude  for point 1 in radian.
+    lat2: float
+        Latitude  for point 2 in radian.
+
+    Returns
+    -------
+    dis: float
+        Great circle distance
+    """
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    
+    a = np.sin(dlat/2.0)**2.0 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2.0
+    
+    dis = 2.0 * np.arcsin(np.sqrt(a))
+    
+    return dis
 
 
 '''

@@ -76,6 +76,9 @@ ds_latEq = analysis.interp_to_dataset(preLats, latEq, ds_contour)
 lwaA, ctrs, masks = analysis.cal_local_wave_activity(tracer, ds_latEq.absolute_vorticity,
                                                     mask_idx=[37,125,170,213],
                                                     part='all')
+lwaA2, ctrs2, masks2 = analysis.cal_local_wave_activity2(tracer, ds_latEq.absolute_vorticity,
+                                                    mask_idx=[37,125,170,213],
+                                                    part='all')
 # lwaU, ctrs, masks = analysis.cal_local_wave_activity(tracer, ds_latEq.absolute_vorticity,
 #                                                     mask_idx=[37,125,170,213],
 #                                                     part='upper')
@@ -91,5 +94,35 @@ print( m.where(m>0).sum().values)
 print(grid.integrate(-m.where(m<0), ['X','Y']).values)
 print(grid.integrate( m.where(m>0), ['X','Y']).values)
 print(grid.get_metric(m, ['X','Y']).sum().values)
+
+#%%
+import proplot as pplt
+
+fontsize = 15
+
+fig, axes = pplt.subplots(nrows=2, ncols=2, figsize=(11,9),
+                          sharex=3, sharey=3)
+
+ax = axes[0]
+m=ax.contourf(tracer*1e5, levels=21, cmap='RdBu_r')
+ax.set_title('vorticity * 1E5', fontsize=fontsize)
+ax.colorbar(m, loc='b', label='')
+
+ax = axes[2]
+m=ax.contourf(lwaA, levels=np.linspace(0, 30, 31), cmap='jet', extend='both')
+ax.set_title('local FAWA (LWA)', fontsize=fontsize)
+ax.colorbar(m, loc='b', label='')
+
+ax = axes[3]
+m=ax.contourf(-lwaA2, levels=np.linspace(0, 30, 31), cmap='jet', extend='both')
+ax.set_title('impulse-Casimir wave activity (local APE)', fontsize=fontsize)
+ax.colorbar(m, loc='b', label='')
+
+ax = axes[1]
+m=ax.contourf((lwaA+lwaA2), levels=21, cmap='RdBu_r')
+ax.set_title('difference (LWA - ICWA)', fontsize=fontsize)
+ax.colorbar(m, loc='b', label='')
+
+
 
 

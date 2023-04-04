@@ -6,8 +6,11 @@ Created on 2020.02.05
 Copyright 2018. All rights reserved. Use is subject to license terms.
 """
 import numpy as np
+import numba as nb
 import xarray as xr
 from xhistogram.xarray import histogram
+from skimage import measure
+from .utils import contour_length
 
 
 class Contour2D(object):
@@ -21,27 +24,27 @@ class Contour2D(object):
 
         Parameters
         ----------
-        grid : xgcm.Grid
+        grid: xgcm.Grid
             a given grid that accounted for grid metrics
-        trcr : xarray.DataArray
+        trcr: xarray.DataArray
             A given tracer on the given grid
-        dims : dict
+        dims: dict
             Dimensions along which the min/max values are defined and then
             mapped to the contour space.  Example:
                 dims = {'X': 'lon', 'Y': 'lat', 'Z': 'Z'}
             Note that only 2D (e.g., X-Y horizontal or X-Z, Y-Z vertical planes)
             is allowed for this class.
-        dimEq : dict
+        dimEq: dict
             Equivalent dimension that should be mapped from contour space.
             Example: dimEq = {'Y': 'lat'} or dimEq = {'Z', 'depth'}
-        arakawa : str
+        arakawa: str
             The type of the grid in ['A', 'C']. Reference:
                 https://db0nus869y26v.cloudfront.net/en/Arakawa_grids
             Others are not well tested.
-        increase : bool
+        increase: bool
             Contour increase with the index of equivalent dimension or not
             after the sorting.
-        lt : bool
+        lt: bool
             If true, less than a contour is defined as inside the contour.
         check_mono: bool
             Check the monotonicity of the result or not (default: False).
@@ -56,6 +59,7 @@ class Contour2D(object):
         self.grid    = grid
         self.arakawa = arakawa
         self.tracer  = trcr
+        self.dims    = dims
         self.dimNs   = list(dims.keys())      # dim names,  ['X', 'Y', 'Z']
         self.dimVs   = list(dims.values())    # dim values, ['lon', 'lat', 'Z']
         self.dimEqN  = list(dimEq.keys())[0]  # equiv. dim name
@@ -64,8 +68,8 @@ class Contour2D(object):
         self.dtype   = dtype
         self.check_mono = check_mono
         self.increase   = increase
-
-
+    
+    
     def cal_area_eqCoord_table(self, mask):
         """
         Calculate the discretized relation table between area and equivalent
@@ -80,12 +84,12 @@ class Contour2D(object):
 
         Parameters
         ----------
-        mask : xarray.DataArray
+        mask: xarray.DataArray
             A boolean mask, 1 if valid data and 0 if topography.
 
         Returns
         ----------
-        tbl : xarray.DataArray
+        tbl: xarray.DataArray
             The relation table between area and equivalent coordinate.  This
             table will be used to represent the relation of A(Yeq) or its
             inverse relation Yeq(A), if equivalent dimension is Yeq.
@@ -141,14 +145,15 @@ class Contour2D(object):
             _check_monotonicity(tbl, 'contour')
         
         return Table(tbl, self.dimEqV)
-
+    
+    
     def cal_area_eqCoord_table_hist(self, mask):
         """
         Calculate the discretized relation table between area and equivalent
         coordinate.  Sometimes, this can be done analytically but mostly it is
         done numerically when dealing with an arbitarily-shaped domain.
         
-        Note: it is assumed that the mask does not change with time.
+        Note: it is assumed that the land/sea mask does not change with time.
         
         Since the implementation based on xarray could be memory consuming,
         we here implement this function using xhistogram, which fast and
@@ -156,12 +161,12 @@ class Contour2D(object):
 
         Parameters
         ----------
-        mask : xarray.DataArray
+        mask: xarray.DataArray
             A boolean mask, 1 if valid data and 0 if topography.
 
         Returns
         ----------
-        tbl : xarray.DataArray
+        tbl: xarray.DataArray
             The relation table between area and equivalent coordinate.  This
             table will be used to represent the relation of A(Yeq) or its
             inverse relation Yeq(A), if equivalent dimension is Yeq.
@@ -172,17 +177,23 @@ class Contour2D(object):
         
         ctrVar = ctrVar.where(mask==1)
         
-        increSame = True
-        if (ctr.values[-1] > ctr.values[0]) != self.increase:
-            increSame = False
+        yIncre = True # Yeq increases with index
+        if ctr.values[-1] < ctr.values[0]:
+            yIncre = False
+        
+        ylt = True
+        if self.increase == yIncre:
+            ylt = self.lt
+        else:
+            ylt = not self.lt
         
         tbl = _histogram(ctrVar, ctr, self.dimVs,
                          self.grid.get_metric(ctrVar, self.dimNs), # weights
-                         increSame == self.lt # less than or greater than
+                         ylt # less than or greater than
                          ).rename('AeqCTbl').rename({'contour':self.dimEqV})\
                           .squeeze().load()
         
-        if increSame:
+        if yIncre:
             tbl = tbl.assign_coords({self.dimEqV:ctr.values}).squeeze()
         else:
             tbl = tbl.assign_coords({self.dimEqV:ctr.values[::-1]}).squeeze()
@@ -248,7 +259,8 @@ class Contour2D(object):
                                  dask='allowed',
                                  input_core_dims=[[], []],
                                  vectorize=True,
-                                 output_core_dims=[['contour']])
+                                 output_core_dims=[['contour']],
+                                 output_dtypes=[self.dtype])
 
             ctr.coords['contour'] = levels
 
@@ -477,9 +489,10 @@ class Contour2D(object):
             return dVardA.rename('d'+var.name+'dA')
     
 
-    def cal_along_contour_mean(self, contour, integrand, area=None):
+    def cal_contour_weigh_mean(self, contour, integrand, area=None):
         """
-        Calculate along-contour average.
+        Calculate average between adjacent contours (i.e., thickness-weighted
+        line-average).
 
         Parameters
         ----------
@@ -487,6 +500,8 @@ class Contour2D(object):
             A given contour levels.
         integrand: xarray.DataArray
             A given integrand to be averaged.
+        area: xarray.DataArray
+            Area enclosed by tracer contour.
         
         Returns
         ----------
@@ -501,9 +516,105 @@ class Contour2D(object):
         lmA  = self.cal_gradient_wrt_area(intA, area)
         
         if integrand.name is None:
-            return lmA.rename('lm')
+            return lmA.rename('lwm')
         else:
-            return lmA.rename('lm'+integrand.name)
+            return lmA.rename('lwm'+integrand.name)
+    
+
+    def cal_contour_weigh_mean_hist(self, contour, integrand, area=None):
+        """
+        Calculate average between adjacent contours (i.e., thickness-weighted
+        line-average).
+
+        Parameters
+        ----------
+        contour: xarray.DataArray
+            A given contour levels.
+        integrand: xarray.DataArray
+            A given integrand to be averaged.
+        area: xarray.DataArray
+            Area enclosed by tracer contour.
+        
+        Returns
+        ----------
+        lm : xarray.DataArray
+            Along-contour (Lagrangian) mean of the integrand.
+        """
+        intA = self.cal_integral_within_contours_hist(contour, integrand=integrand)
+        
+        if area is None:
+            area = self.cal_integral_within_contours_hist(contour)
+        
+        lmA  = self.cal_gradient_wrt_area(intA, area)
+        
+        if integrand.name is None:
+            return lmA.rename('lwm')
+        else:
+            return lmA.rename('lwm'+integrand.name)
+    
+    
+    def cal_contour_mean(self, contour, integrand, grdm, area=None):
+        """
+        Calculate along-contour average (simple line-integral).
+
+        Parameters
+        ----------
+        contour: xarray.DataArray
+            A given contour levels.
+        integrand: xarray.DataArray
+            A given integrand to be averaged.
+        grdm: xarray.DataArray
+            Magnitude of tracer gradient.
+        area: xarray.DataArray
+            Area enclosed by tracer contour.
+        
+        Returns
+        ----------
+        lm : xarray.DataArray
+            Along-contour (Lagrangian) mean of the integrand.
+        """
+        upper = self.cal_contour_weigh_mean(contour, integrand*grdm, area=area)
+        lower = self.cal_contour_weigh_mean(contour, grdm, area=area)
+        
+        lmA  = upper / lower
+        
+        if integrand.name is None:
+            return lmA.rename('cm')
+        else:
+            return lmA.rename('cm'+integrand.name)
+    
+
+    def cal_contour_mean_hist(self, contour, integrand, grdm, area=None):
+        """
+        Calculate along-contour average (simple line-integral).
+
+        Parameters
+        ----------
+        contour: xarray.DataArray
+            A given contour levels.
+        integrand: xarray.DataArray
+            A given integrand to be averaged.
+        grdm: xarray.DataArray
+            Magnitude of tracer gradient.
+        area: xarray.DataArray
+            Area enclosed by tracer contour.
+        
+        Returns
+        ----------
+        lm : xarray.DataArray
+            Along-contour (Lagrangian) mean of the integrand.
+        """
+        upper = self.cal_contour_weigh_mean_hist(contour, integrand*grdm,
+                                                 area=area)
+        lower = self.cal_contour_weigh_mean_hist(contour, grdm,
+                                                 area=area)
+        
+        lmA  = upper / lower
+        
+        if integrand.name is None:
+            return lmA.rename('cm')
+        else:
+            return lmA.rename('cm'+integrand.name)
     
     
     def cal_sqared_equivalent_length(self, dgrdSdA, dqdA):
@@ -525,8 +636,64 @@ class Contour2D(object):
         Leq2  = (dgrdSdA / dqdA ** 2).rename('Leq2')
 
         return Leq2
+    
+    
+    def cal_contour_crossing(self, ctr, stride=1, mode='edge'):
+        """
+        Calculate whether contour is crossing using 'box-counting' method.
 
-
+        Parameters
+        ----------
+        ctr: xarray.DataArray
+            Contour levels.
+        stride: int or list of ints
+            Sample crossing every stride grid points.
+            1 for original grid, 2 for half the resolution, ...
+        mode: str
+            Pad mode passing to xarray.DataArray.pad().
+        
+        Returns
+        ----------
+        re: xarray.DataArray or list of xarray.DataArray
+            Boolean arrays indicating whether a contour is crossing.
+        """
+        from collections.abc import Iterable
+        
+        if isinstance(stride, Iterable):
+            maxStride  = max(stride)
+            isiterable = True
+        else:
+            maxStride = stride
+            stride = [stride]
+            isiterable = False
+        
+        data = self.tracer
+        area = self.grid.get_metric(data, self.dimNs)
+        dims = [d for d in data.dims if d in self.dimVs]
+        
+        if 'X' in self.dims:
+            dataPad = data.pad({self.dims['X']:(0, maxStride)}, mode=mode)
+            areaPad = area.pad({self.dims['X']:(0, maxStride)}, mode=mode)
+        else:
+            dataPad = data
+            areaPad = area
+        
+        re = []
+        for strd in stride:
+            re.append(xr.apply_ufunc(_contour_crossing,
+                                     dataPad, ctr, areaPad,
+                                     kwargs={'stride':strd},
+                                     dask='parallelized',
+                                     input_core_dims=[dims, [], dims],
+                                     vectorize=True,
+                                     output_dtypes=[self.dtype]))
+        
+        if isiterable:
+            return re
+        else:
+            return re[0]
+    
+    
     def cal_local_wave_activity(self, q, Q, mask_idx=None, part='all'):
         """
         Calculate local finite-amplitude wave activity density.
@@ -633,6 +800,112 @@ class Contour2D(object):
             return LWA.rename('LWA')
 
 
+    def cal_local_wave_activity2(self, q, Q, mask_idx=None, part='all'):
+        """
+        Calculate local finite-amplitude wave activity density.
+        Reference: Huang and Nakamura 2016, JAS
+
+        Parameters
+        ----------
+        q: xarray.DataArray
+            A tracer field.
+        Q: xarray.DataArray
+            The sorted tracer field along the equivalent dimension.
+        mask_idx: list of int
+            Return masks at the indices of equivalent dimension.
+        part: str
+            The parts over which the integration is taken.  Available options
+            are ['all', 'upper', 'lower'], corresponding to all, W+, and W-
+            regions defined in Huang and Nakamura (2016, JAS)
+        
+        Returns
+        ----------
+        lwa : xarray.DataArray
+            Local finite-amplitude wave activity, corresponding to part.
+        contours : list
+            A list of Q-contour corresponding to mask_idx.
+        masks : list
+            A list of mask corresponding to mask_idx.
+        """
+        wei  = self.grid.get_metric(q, self.dimNs).squeeze()
+        wei  = wei / wei.max() # normalize between [0-1], similar to cos(lat)
+        part = part.lower()
+        # q2 = q.squeeze()
+        
+        eqDim = q[self.dimEqV]
+        eqDimLen = len(eqDim)
+        tmp = []
+        
+        if part.lower() not in ['all', 'upper', 'lower']:
+            raise Exception('invalid part, should be in [\'all\', \'upper\', \'lower\']')
+        
+        # equivalent dimension is increasing or not
+        coord_incre = True
+        if eqDim.values[-1] < eqDim.values[0]:
+            coord_incre = False
+        
+        # output contours and masks if mask_idx is provided
+        masks = []
+        contours = []
+        returnmask = False
+        if mask_idx is None:
+            mask_idx = []
+        else:
+            if max(mask_idx) >= len(eqDim):
+                raise Exception('indices in mask_idx out of boundary')
+            returnmask = True
+        
+        # loop for each contour (or each equivalent dimension surface)
+        for j in range(eqDimLen):
+            # deviation from the reference
+            qe = q.isel({self.dimEqV:j}) - Q
+            
+            # above or below the reference coordinate surface
+            m = eqDim>=eqDim.values[j] if coord_incre else eqDim<=eqDim.values[j]
+            
+            if not self.increase:
+                mask1 = xr.where(qe>0, -1, 0)
+                mask2 = xr.where(m, 0, mask1).transpose(*(mask1.dims))
+                mask3 = xr.where(np.logical_and(qe<0, m), 1, mask2)
+            else:
+                mask1 = xr.where(qe<0, -1, 0)
+                mask2 = xr.where(m, 0, mask1).transpose(*(mask1.dims))
+                mask3 = xr.where(np.logical_and(qe>0, m), 1, mask2)
+            
+            if j in mask_idx:
+                contours.append(Q.isel({self.dimEqV:j}))
+                masks.append(mask3)
+            
+            # select part over which integration is performed
+            if part == 'all':
+                maskFinal = mask3
+            elif part == 'upper':
+                if self.increase:
+                    maskFinal = mask3.where(mask3>0)
+                else:
+                    maskFinal = mask3.where(mask3<0)
+            else:
+                if self.increase:
+                    maskFinal = mask3.where(mask3<0)
+                else:
+                    maskFinal = mask3.where(mask3>0)
+            
+            # perform area-weighted conditional integration
+            # lwa = (qe * maskFinal * wei *
+            #        self.grid.get_metric(qe, self.dimEqN)).sum(self.dimEqV)
+            lwa = -self.grid.integrate(qe * maskFinal * wei, self.dimEqN)
+            
+            tmp.append(lwa)
+        
+        LWA = xr.concat(tmp, self.dimEqV).transpose(*(q.dims))
+        LWA[self.dimEqV] = eqDim.values
+        
+        if returnmask:
+            return LWA.rename('LWA'), contours, masks
+        else:
+            return LWA.rename('LWA')
+
+
     def cal_local_APE(self, q, Q, mask_idx=None, part='all'):
         """
         Calculate local available potential energy (APE) density.  This is
@@ -692,7 +965,55 @@ class Contour2D(object):
         nkeff = nkeff.where(nkeff<mask).rename('nkeff')
 
         return nkeff
-
+    
+    
+    def cal_contour_lengths(self, contours, tracer=None, latlon=False):
+        """
+        Calculate contour lengths.
+        
+        Parameters
+        ----------
+        contours: int or list
+            How many contours or levels of contours.
+        tracer: xarray.DataArray
+            A specific tracer field (default is self.tracer).
+        latlon: boolean
+            Latlon or cartesian coordinates.
+        period: list
+            List of period corresponding to dims.  If globally along dim `lon`, one
+            should set `period=[360, None]`.
+        
+        Returns
+        -------
+        lengths: xarray.DataArray
+            Lengths of contours.
+        """
+        if type(contours) in [int, list]:
+            contours = self.cal_contours(contours)
+        
+        ordered = []
+        for dim in self.tracer.dims:
+            if dim in self.dimVs:
+                ordered.append(dim)
+        
+        if tracer is None:
+            data = self.tracer
+        else:
+            data = tracer
+        
+        dims = [data[ordered[0]].astype('float32'),
+                data[ordered[1]].astype('float32')]
+        
+        lengths = xr.apply_ufunc(_contour_lengths, data, contours,
+                                 kwargs={'latlon':latlon, 'dims':dims},
+                                 dask='parallelized',
+                                 input_core_dims=[ordered, ['contour']],
+                                 vectorize=True,
+                                 output_core_dims=[['contour']],
+                                 output_dtypes=[self.dtype])
+        
+        return lengths
+        
 
     def interp_to_dataset(self, predef, dimEq, vs):
         """
@@ -1091,9 +1412,143 @@ def _interp1d(x, xf, yf, inc=True, outside=None):
     return re
 
 
+def _contour_lengths(data, contours, dims=[], latlon=True):
+    """Calculate contour length in a 2D numpy data.
+    This is designed for xarray's ufunc.
+
+    Parameters
+    ----------
+    data: numpy.ndarray
+        2D numpy data.
+    contours: numpy.ndarray
+        a list of contour values.
+    dims: xarray.DataArray
+        a list of two dimension variables.
+    latlon: boolean, optional
+        Whether dimension is latlon or cartesian.
+    period: list of floats, optional
+        Period in each dimension if coordinate is periodic.
+
+    Returns
+    -------
+    lengths: numpy.ndarray
+        List of contour lengths.
+    """
+    if latlon:
+        coord1 = np.deg2rad(dims[0].values) # assume to be y
+        coord2 = np.deg2rad(dims[1].values) # assume to be x
+    else:
+        coord1 = dims[0].values # assume to be y
+        coord2 = dims[1].values # assume to be x
+    
+    lengths = []
+    
+    for i,c in enumerate(contours):
+        # in unit of grid points
+        segments = measure.find_contours(data, c)
+        
+        tlist = nb.typed.List.empty_list(nb.typeof(np.zeros((9,2))))
+        
+        for segment in segments:
+            tlist.append(segment)
+        
+        lengths.append(contour_length(tlist, coord2, coord1, latlon=latlon))
+        
+        # if i == 0:
+        #     print(latlon)
+        #     print(tlist)
+        #     print(len(tlist[0]))
+        #     print(coord2)
+        #     print(coord1)
+        #     print(contour_length(tlist, coord2, coord1, latlon=latlon, disp=True))
+    
+    return np.asarray(lengths)
+
+
+@nb.jit(nopython=True, cache=False)
+def _contour_crossing(dataPad, contour, areaPad, stride=1):
+    """Whether a given contour is crossing the grid point using box-counting.
+
+    Parameters
+    ----------
+    dataPad: numpy.ndarray
+        Original data padded with stride in a 2D slice format.
+    contour: float
+        A given contour value.
+    areaPad: numpy.ndarray
+        Area of each grid point padded with stride.
+    stride: int
+        A given contour value.
+        
+    Returns
+    -------
+    re: numpy.ndarray
+        Result of the data in bool: 0 for false and 1 for true.
+    """
+    # strange implementation for np.zeros to work in numba function
+    jj, nn = dataPad.shape
+    shape = (np.round(jj / stride), np.round(nn / stride))
+    
+    J = np.zeros(shape=(), dtype=np.int64)
+    N = np.zeros(shape=(), dtype=np.int64)
+    J[()], N[()] = shape
+    
+    re = np.zeros((J[()], N[()]))
+    Jn, In = re.shape
+    Jo, Io = dataPad.shape
+    
+    for j in range(0, Jn-1):
+        jstr = j * stride
+        
+        for i in range(0, Jn-1):
+            istr = i * stride
+            le = False
+            gt = False
+            
+            for jj in range(jstr, jstr + stride):
+                for ii in range(istr, istr + stride):
+                    ll = dataPad[jj  , ii  ]
+                    lr = dataPad[jj  , ii+1]
+                    ul = dataPad[jj+1, ii  ]
+                    ur = dataPad[jj+1, ii+1]
+                    
+                    if not np.isnan(ll): # lower-left corner
+                        if ll <= contour:
+                            le = True
+                        else:
+                            gt = True
+                            
+                    if not np.isnan(lr): # lower-right corner
+                        if lr <= contour:
+                            le = True
+                        else:
+                            gt = True
+                            
+                    if not np.isnan(ul): # upper-left corner
+                        if ul <= contour:
+                            le = True
+                        else:
+                            gt = True
+                            
+                    if not np.isnan(ur): # upper-right corner
+                        if ur <= contour:
+                            le = True
+                        else:
+                            gt = True
+            
+            if le and gt: # contour is inside the current grid box
+                re[j, i] = np.sqrt(areaPad[j, i]) * stride
+            else:
+                re[j, i] = 0
+    
+    return np.nansum(re)
+
+
 """
 Testing codes for each class
 """
 if __name__ == '__main__':
     print('start testing in ContourMethods')
+
+
 

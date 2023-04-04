@@ -96,9 +96,11 @@ ds_ZEq = analysis.interp_to_dataset(preZs, ZEq, ds_contour)
 #%% calculate local finite-amplitude wave activity
 lape, ctrs, masks = analysis.cal_local_APE(b, ds_ZEq.buoyancy,
                                            mask_idx=[8,28,51,81])
+lape2, ctrs2, masks2 = analysis.cal_local_wave_activity2(b, ds_ZEq.buoyancy,
+                                           mask_idx=[8,28,51,81])
 
 
-#%%
+#%% LWA
 import proplot as pplt
 
 fig, axes = pplt.subplots(nrows=3, ncols=2, figsize=(10, 8.5), sharex=3, sharey=3)
@@ -122,12 +124,53 @@ def plot_time(tidx, add_colorbar=False):
     msk = sum(masks)
     lev = xr.concat(ctrs, 'Z').isel(time=tidx).values
     m1=ax.contourf(msk.where(msk!=0)[tidx], cmap='bwr')
-    ax.contour(b.where(mask)[tidx], levels=lev, lw=0.8, color='k')
+    ax.contour(b.where(mask)[tidx], levels=lev[::-1], lw=0.8, color='k')
     if add_colorbar:
         ax.colorbar(m1, loc='b', ticks=1, label='')
     ax.set_title('masks for local APE calculation', fontsize=fontsize)
     ax.set_xlabel('x-coordinate (m)', fontsize=fontsize-1)
     ax.set_ylabel('z-coordinate (m)', fontsize=fontsize-1)
+    ax.set_xticks([0, 2000, 4000, 6000, 8000])
+    ax.set_yticks([-200, -150, -100, -50, 0])
+    ax.set_ylim([-200, 0])
+
+plot_time(0)
+plot_time(1)
+plot_time(2, True)
+
+axes.format(abc='(a)')
+
+#%% IC
+import proplot as pplt
+
+fig, axes = pplt.subplots(nrows=3, ncols=2, figsize=(10, 8.5), sharex=3, sharey=3)
+
+fontsize = 12
+
+def plot_time(tidx, add_colorbar=False):
+    ax = axes[tidx, 0]
+    m1=ax.contourf(lape2.where(mask)[tidx]*1e4, levels=np.linspace(0,50,26), cmap='reds') # minus sign to ensure positive definite
+    ax.contour(b.where(mask)[tidx], levels=11, cmap='viridis', lw=0.8)
+    if add_colorbar:
+        ax.colorbar(m1, loc='b', ticks=5, label='')
+    ax.set_title('buoyancy and local APE density (t={})'.format(tidx), fontsize=fontsize)
+    ax.set_xlabel('x-coordinate (m)', fontsize=fontsize-1)
+    ax.set_ylabel('z-coordinate (m)', fontsize=fontsize-1)
+    ax.set_xticks([0, 2000, 4000, 6000, 8000])
+    ax.set_yticks([-200, -150, -100, -50, 0])
+    ax.set_ylim([-200, 0])
+    
+    ax = axes[tidx, 1]
+    msk = sum(masks2)
+    lev = xr.concat(ctrs, 'Z').isel(time=tidx).values
+    m1=ax.contourf(msk.where(msk!=0)[tidx], cmap='bwr')
+    ax.contour(b.where(mask)[tidx], levels=lev[::-1], lw=0.8, color='k')
+    if add_colorbar:
+        ax.colorbar(m1, loc='b', ticks=1, label='')
+    ax.set_title('masks for local APE calculation', fontsize=fontsize)
+    ax.set_xlabel('x-coordinate (m)', fontsize=fontsize-1)
+    ax.set_ylabel('z-coordinate (m)', fontsize=fontsize-1)
+    ax.set_xlim([0, 8960])
     ax.set_xticks([0, 2000, 4000, 6000, 8000])
     ax.set_yticks([-200, -150, -100, -50, 0])
     ax.set_ylim([-200, 0])
