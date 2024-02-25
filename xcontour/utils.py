@@ -38,7 +38,7 @@ dimZList = ['lev', 'level', 'LEV', 'LEVEL', 'pressure', 'PRESSURE',
 
 
 
-def add_latlon_metrics(dset, dims=None, boundary=None):
+def add_latlon_metrics(dset, dims=None, boundary=None, Rearth=Rearth):
     """
     Infer 2D metrics (latitude/longitude) from gridded data file.
 
@@ -114,23 +114,33 @@ def add_latlon_metrics(dset, dims=None, boundary=None):
             grid = Grid(ds, periodic=False, boundary={'Z': BCz, 'Y': BCy, 'X': BCx})
     
     
-    lonC = ds[lon]
-    latC = ds[lat]
-    lonG = ds[lon + '_left']
-    latG = ds[lat + '_left']
+    lonC = ds[lon]              # original grid point as tracer point
+    latC = ds[lat]              # original grid point as tracer point
+    lonG = ds[lon + '_left']    # new grid point as u-point
+    latG = ds[lat + '_left']    # new grid point as v-point
     
     if 'X' in periodic:
         # dlonC = grid.diff(lonC, 'X', boundary_discontinuity=360)
         # dlonG = grid.diff(lonG, 'X', boundary_discontinuity=360)
-        dlonC = grid.diff(lonC, 'X')
+        dlonC = grid.diff(lonC, 'X')   
         dlonG = grid.diff(lonG, 'X')
+        dlonC[0 ] = dlonC[0 ] + 360 # mini-dong: adjust initial point
+        dlonG[-1] = dlonG[-1] + 360 # mini-dong: adjust initial point
     else:
-        dlonC = grid.diff(lonC, 'X', boundary='extend')
+        dlonC = grid.diff(lonC, 'X', boundary='extend')   
         dlonG = grid.diff(lonG, 'X', boundary='extend')
     
     dlatC = grid.diff(latC, 'Y')
     dlatG = grid.diff(latG, 'Y')
-    
+    dlatCHalf = dlatC[-1].values/2 # mini-dong: adjust terminal point  
+    dlatC[-1] = dlatCHalf          # mini-dong: adjust terminal point
+    dlatC[0]  = dlatCHalf          # mini-dong: adjust terminal point
+    dlatGHalf = dlatG[0].values/2  # mini-dong: adjust terminal point
+    dlatG[-1] = dlatGHalf          # mini-dong: adjust terminal point
+    dlatG[0]  = dlatGHalf          # mini-dong: adjust terminal point
+
+    # coords['dlonG'], coords['dlatG'] = dlonG, dlatG # mini-dong: add for test
+
     coords['dxG'], coords['dyG'] = __dll_dist(dlonG, dlatG, lonG, latG)
     coords['dxC'], coords['dyC'] = __dll_dist(dlonC, dlatC, lonC, latC)
     coords['dxF'] = grid.interp(coords['dxG'], 'Y')
@@ -267,7 +277,7 @@ def add_MITgcm_missing_metrics(dset, periodic=None, boundary=None, partial_cell=
     return dset, grid
 
 
-def equivalent_latitudes(areas):
+def equivalent_latitudes(areas, Rearth=Rearth):
     """
     Calculate equivalent latitude using the formular:
         2 * pi * a^2 * [sin(latEq) + sin(90)] = area.
@@ -294,7 +304,7 @@ def equivalent_latitudes(areas):
     return latEq
 
 
-def latitude_lengths_at(lats):
+def latitude_lengths_at(lats, Rearth=Rearth):
     """
     Calculate minimum length on a sphere given latitudes.
 
@@ -341,7 +351,7 @@ def contour_area(verts):
 
 
 # @nb.jit(nopython=True, cache=False)
-def contour_length(segments, xdef, ydef, latlon=True, disp=False):
+def contour_length(segments, xdef, ydef, latlon=True, disp=False, Rearth=Rearth):
     """Compute the length of a contour.
     
     Parameters
