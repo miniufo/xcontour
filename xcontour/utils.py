@@ -19,7 +19,9 @@ Here defines all the constants that are commonly used in earth sciences
 Rearth = 6371200.0
 
 # distance of unit degree at the equator
-deg2m = 2.0 * np.pi * Rearth / 360.0
+def deg2m(Rearth=Rearth):
+    deg2m = 2.0 * np.pi * Rearth / 360.0
+    return deg2m
 
 # Gravitational acceleration g (m s^-2)
 g = 9.80665
@@ -124,35 +126,87 @@ def add_latlon_metrics(dset, dims=None, boundary=None, Rearth=Rearth):
         # dlonG = grid.diff(lonG, 'X', boundary_discontinuity=360)
         dlonC = grid.diff(lonC, 'X')   
         dlonG = grid.diff(lonG, 'X')
-        dlonC[0 ] = dlonC[0 ] + 360 # mini-dong: adjust initial point
-        dlonG[-1] = dlonG[-1] + 360 # mini-dong: adjust initial point
+        for i in [0,-1]:  # mini-dong: adjust periodic terminal point
+            if dlonC[i ] < 0:
+                dlonC[i ] = dlonC[i ] + 360
+            elif dlonC[i ] > 360:
+                dlonC[i ] = dlonC[i ] - 360
+            if dlonG[i ] < 0:
+                dlonG[i ] = dlonG[i ] + 360
+            elif dlonG[i ] > 360:
+                dlonG[i ] = dlonG[i ] - 360           
+
     else:
         dlonC = grid.diff(lonC, 'X', boundary='extend')   
         dlonG = grid.diff(lonG, 'X', boundary='extend')
-    
+        if dlonC[0] == 0: # mini-dong: adjust terminal point
+             dlonC[0] = dlonC[1].values
+        elif dlonC[-1] == 0 :
+            dlonC[-1] = dlonC[1].values
+
+        if dlonG[0] == 0: # mini-dong: adjust terminal point
+             dlonG[0] = dlonG[1].values
+        elif dlonG[-1] == 0:
+            dlonG[-1] = dlonG[1].values        
+        
     dlatC = grid.diff(latC, 'Y')
     dlatG = grid.diff(latG, 'Y')
-    dlatCHalf = dlatC[-1].values/2 # mini-dong: adjust terminal point  
-    dlatC[-1] = dlatCHalf          # mini-dong: adjust terminal point
-    dlatC[0]  = dlatCHalf          # mini-dong: adjust terminal point
-    dlatGHalf = dlatG[0].values/2  # mini-dong: adjust terminal point
-    dlatG[-1] = dlatGHalf          # mini-dong: adjust terminal point
-    dlatG[0]  = dlatGHalf          # mini-dong: adjust terminal point
+    if dlatC[0] == 0: # mini-dong: adjust terminal point
+         dlatC[0] = dlatC[1].values
+    elif dlatC[-1] == 0 :
+        dlatC[-1] = dlatC[1].values
 
-    # coords['dlonG'], coords['dlatG'] = dlonG, dlatG # mini-dong: add for test
+    if dlatG[0] == 0: # mini-dong: adjust terminal point
+         dlatG[0] = dlatG[1].values
+    elif dlatG[-1] == 0:
+        dlatG[-1] = dlatG[1].values
 
-    coords['dxG'], coords['dyG'] = __dll_dist(dlonG, dlatG, lonG, latG)
-    coords['dxC'], coords['dyC'] = __dll_dist(dlonC, dlatC, lonC, latC)
+    # coords['lonG'], coords['latG'] = lonG, latG # mini-dong: add for test
+    # coords['lonC'], coords['latC'] = lonC, latC # mini-dong: add for test
+    coords['dxG'], coords['dyG'] = __dll_dist(dlonG, dlatG, lonG, latG, Rearth)
+    coords['dxC'], coords['dyC'] = __dll_dist(dlonC, dlatC, lonC, latC, Rearth)
     coords['dxF'] = grid.interp(coords['dxG'], 'Y')
     coords['dyF'] = grid.interp(coords['dyG'], 'X')
     coords['dxV'] = grid.interp(coords['dxG'], 'X')
     coords['dyU'] = grid.interp(coords['dyG'], 'Y')
     
-    coords['rA' ] = ds['dyF'] * ds['dxF']
-    coords['rAw'] = ds['dyG'] * ds['dxC']
-    coords['rAs'] = ds['dyC'] * ds['dxG']
-    coords['rAz'] = ds['dyU'] * ds['dxV']
-    
+    # copy from 'MITgcm/model/src/ini_cartesian_grid.F'
+    # coords['rA' ] = ds['dyF'] * ds['dxF']
+    # coords['rAw'] = ds['dyG'] * ds['dxC']
+    # coords['rAs'] = ds['dyC'] * ds['dxG']
+    # coords['rAz'] = ds['dyU'] * ds['dxV']
+
+    # mini-dong: S = r**2*(sin(phi1)-sin(phi2))*(lambda1-lambda2)
+    deg2rad = np.pi/180
+    phi1 = (latC-latC+latG.values+dlatG)   # upper boundary
+    phi2 = (latC-latC+latG.values)         # lower boundary
+    # Processing pole
+    temp1 = phi1
+    temp2 = phi2
+    if abs(phi1[1])<90 and abs(phi1[-2])<90:
+        temp1 = xr.where(phi1> 90, 90,phi1)  # temporary for calculate poles
+    if abs(phi2[1])<90 and abs(phi2[-2])<90:
+        temp2 = xr.where(phi2<-90,-90,phi2)  # temporary for calculate poles
+    rAc = Rearth*Rearth*abs(np.sin(temp1*deg2rad)-np.sin(temp2*deg2rad))*(dlonG*deg2rad) # rA
+    rAw = Rearth*Rearth*abs(np.sin(temp1*deg2rad)-np.sin(temp2*deg2rad))*(dlonC*deg2rad)
+
+    phi1 = (latG-latG+latC.values)         # upper boundary
+    phi2 = (latG-latG+latC.values-dlatC)   # lower boundary
+    # Processing pole
+    temp1 = phi1
+    temp2 = phi2
+    if abs(phi1[1])<90 and abs(phi1[-2])<90:
+        temp1 = xr.where(phi1> 90, 90,phi1)  # temporary for calculate poles
+    if abs(phi2[1])<90 and abs(phi2[-2])<90:
+        temp2 = xr.where(phi2<-90,-90,phi2)  # temporary for calculate poles
+    rAs = Rearth*Rearth*abs(np.sin(temp1*deg2rad)-np.sin(temp2*deg2rad))*(dlonG*deg2rad)
+    rAz = Rearth*Rearth*abs(np.sin(temp1*deg2rad)-np.sin(temp2*deg2rad))*(dlonC*deg2rad)
+
+    coords['rA' ] = rAc
+    coords['rAw'] = rAw
+    coords['rAs'] = rAs
+    coords['rAz'] = rAz
+
     if lev is not None:
         levC = ds[lev].values
         tmp  = np.diff(levC)
@@ -401,7 +455,7 @@ def contour_length(segments, xdef, ydef, latlon=True, disp=False, Rearth=Rearth)
 """
 Helper (private) methods are defined below
 """
-def __dll_dist(dlon, dlat, lon, lat):
+def __dll_dist(dlon, dlat, lon, lat, Rearth=Rearth):
     """
     Converts lat/lon differentials into distances in meters.
 
@@ -423,9 +477,11 @@ def __dll_dist(dlon, dlat, lon, lat):
     dy  : xarray.DataArray
         Distance inferred from dlat
     """
-    dx = np.cos(np.deg2rad(lat)) * dlon * deg2m
-    dy = (dlat + lon - lon) * deg2m
+    dx = np.cos(np.deg2rad(lat)) * dlon * deg2m(Rearth=Rearth)
+    dy = (dlat + lon - lon) * deg2m(Rearth=Rearth)
     
+    # mini-dong: <cos(-90) and >cos(90) is negative
+    dx = xr.where(dx<0, -dx, dx)
     # cos(+/-90) is not exactly zero, add a threshold
     dx = xr.where(dx<1e-15, 0, dx)
     
