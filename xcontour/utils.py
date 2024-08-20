@@ -20,8 +20,8 @@ Rearth = 6371200.0
 
 # distance of unit degree at the equator
 def deg2m(Rearth=Rearth):
-    deg2m = 2.0 * np.pi * Rearth / 360.0
-    return deg2m
+    degtom = 2.0 * np.pi * Rearth / 360.0
+    return degtom
 
 # Gravitational acceleration g (m s^-2)
 g = 9.80665
@@ -128,13 +128,13 @@ def add_latlon_metrics(dset, dims=None, boundary=None, Rearth=Rearth):
         dlonG = grid.diff(lonG, 'X')
         for i in [0,-1]:  # mini-dong: adjust periodic terminal point
             if dlonC[i ] < 0:
-                dlonC[i ] = dlonC[i ] + 360
+                dlonC[i ] += 360
             elif dlonC[i ] > 360:
-                dlonC[i ] = dlonC[i ] - 360
+                dlonC[i ] -= 360
             if dlonG[i ] < 0:
-                dlonG[i ] = dlonG[i ] + 360
+                dlonG[i ] += 360
             elif dlonG[i ] > 360:
-                dlonG[i ] = dlonG[i ] - 360           
+                dlonG[i ] -= 360        
 
     else:
         dlonC = grid.diff(lonC, 'X', boundary='extend')   
@@ -258,6 +258,162 @@ def add_latlon_metrics(dset, dims=None, boundary=None, Rearth=Rearth):
     
     return ds, grid
 
+def add_latlon_metrics_old(dset, dims=None, boundary=None):
+    """
+    Infer 2D metrics (latitude/longitude) from gridded data file.
+
+    Parameters
+    ----------
+    dset : xarray.Dataset
+        A dataset open from a file
+    dims : dict
+        Dimension pair in a dict, e.g., {'Y':'latitude', 'X':'longitude'}
+    boundary : dict
+        Default boundary conditions applied to each coordinate
+
+    Return
+    -------
+    dset : xarray.Dataset
+        Input dataset with appropriated metrics added
+    grid : xgcm.Grid
+        The grid with appropriated metrics
+    """
+    lon, lat, lev = None, None, None
+    
+    if dims is None:
+        for dim in dimXList:
+            if dim in dset.dims:
+                lon = dim
+                break
+
+        for dim in dimYList:
+            if dim in dset.dims:
+                lat = dim
+                break
+
+        for dim in dimZList:
+            if dim in dset.dims:
+                lev = dim
+                break
+
+        if lon is None or lat is None:
+            raise Exception('unknown dimension names in dset, should be in '
+                            + str(dimXList + dimYList))
+    else:
+        lon = dims['X'] if 'X' in dims else None
+        lat = dims['Y'] if 'Y' in dims else None
+        lev = dims['Z'] if 'Z' in dims else None
+    
+    if lev is None:
+        ds = generate_grid_ds(dset, {'X':lon, 'Y':lat})
+    else:
+        ds = generate_grid_ds(dset, {'X':lon, 'Y':lat, 'Z':lev})
+    
+    coords = ds.coords
+    
+    BCx, BCy, BCz = 'extend', 'extend', 'extend'
+    
+    if boundary is not None:
+        BCx = boundary['X'] if 'X' in boundary else 'extend'
+        BCy = boundary['Y'] if 'Y' in boundary else 'extend'
+        BCz = boundary['Z'] if 'Z' in boundary else 'extend'
+    
+    if __is_periodic(coords[lon], 360.0):
+        periodic = 'X'
+        
+        if lev is None:
+            grid = Grid(ds, periodic=[periodic], boundary={'Y': BCy})
+        else:
+            grid = Grid(ds, periodic=[periodic], boundary={'Z':BCz, 'Y': BCy})
+    else:
+        periodic = []
+        
+        if lev is None:
+            grid = Grid(ds, periodic=False, boundary={'Y': BCy, 'X': BCx})
+        else:
+            grid = Grid(ds, periodic=False, boundary={'Z': BCz, 'Y': BCy, 'X': BCx})
+    
+    
+    lonC = ds[lon]
+    latC = ds[lat]
+    lonG = ds[lon + '_left']
+    latG = ds[lat + '_left']
+    
+    if 'X' in periodic:
+        # dlonC = grid.diff(lonC, 'X', boundary_discontinuity=360)
+        # dlonG = grid.diff(lonG, 'X', boundary_discontinuity=360)
+        dlonC = grid.diff(lonC, 'X')
+        dlonG = grid.diff(lonG, 'X')
+    else:
+        dlonC = grid.diff(lonC, 'X', boundary='extend')
+        dlonG = grid.diff(lonG, 'X', boundary='extend')
+    
+    dlatC = grid.diff(latC, 'Y')
+    dlatG = grid.diff(latG, 'Y')
+    
+    coords['dxG'], coords['dyG'] = __dll_dist_old(dlonG, dlatG, lonG, latG)
+    coords['dxC'], coords['dyC'] = __dll_dist_old(dlonC, dlatC, lonC, latC)
+    coords['dxF'] = grid.interp(coords['dxG'], 'Y')
+    coords['dyF'] = grid.interp(coords['dyG'], 'X')
+    coords['dxV'] = grid.interp(coords['dxG'], 'X')
+    coords['dyU'] = grid.interp(coords['dyG'], 'Y')
+    
+    coords['rA' ] = ds['dyF'] * ds['dxF']
+    coords['rAw'] = ds['dyG'] * ds['dxC']
+    coords['rAs'] = ds['dyC'] * ds['dxG']
+    coords['rAz'] = ds['dyU'] * ds['dxV']
+    
+    if lev is not None:
+        levC = ds[lev].values
+        tmp  = np.diff(levC)
+        tmp  = np.concatenate([[(levC[0]-tmp[0])], levC])
+        levG = tmp[:-1]
+        delz = np.diff(tmp)
+        
+        ds[lev + '_left'] = levG
+        coords['drF'] = xr.DataArray(delz, dims=lev, coords={lev: levC})
+        coords['drG'] = xr.DataArray(np.concatenate([[delz[0]/2], delz[1:-1],
+                                      [delz[-1]/2]]), dims=lev+'_left',
+                                      coords={lev+'_left': levG})
+        
+        metrics={('X',    ): ['dxG', 'dxF', 'dxC', 'dxV'], # X distances
+                 ('Y' ,   ): ['dyG', 'dyF', 'dyC', 'dyU'], # Y distances
+                 ('Z' ,   ): ['drG', 'drF'],               # Z distances
+                 ('X', 'Y'): ['rAw', 'rAs', 'rA' , 'rAz']}
+    else:
+        metrics={('X',    ): ['dxG', 'dxF', 'dxC', 'dxV'], # X distances
+                 ('Y' ,   ): ['dyG', 'dyF', 'dyC', 'dyU'], # Y distances
+                 ('X', 'Y'): ['rAw', 'rAs', 'rA' , 'rAz']}
+    
+    # print('lonC', lonC.dims)
+    # print('latC', latC.dims)
+    # print('lonG', lonG.dims)
+    # print('latG', latG.dims)
+    # print('')
+    # print('dlonC', dlonC.dims)
+    # print('dlatC', dlatC.dims)
+    # print('dlonG', dlonG.dims)
+    # print('dlatG', dlatG.dims)
+    # print('')
+    # print('dxG', coords['dxG'].dims)
+    # print('dyG', coords['dyG'].dims)
+    # print('dxF', coords['dxF'].dims)
+    # print('dyF', coords['dyF'].dims)
+    # print('dxC', coords['dxC'].dims)
+    # print('dyC', coords['dyC'].dims)
+    # print('dxV', coords['dxV'].dims)
+    # print('dyU', coords['dyU'].dims)
+    # print('')
+    # print('rA' , coords['rA' ].dims)
+    # print('rAz', coords['rAz'].dims)
+    # print('rAw', coords['rAw'].dims)
+    # print('rAs', coords['rAs'].dims)
+    
+    for key, value in metrics.items():
+        grid.set_metrics(key, value)
+    
+    return ds, grid
+
 
 def add_MITgcm_missing_metrics(dset, periodic=None, boundary=None, partial_cell=True):
     """
@@ -290,10 +446,10 @@ def add_MITgcm_missing_metrics(dset, periodic=None, boundary=None, partial_cell=
         coords['drS'] = dset.hFacS * dset.drF if partial_cell else dset.drF
     if 'drC' not in coords: # vertical cell size at tracer point
         coords['drC'] = dset.hFacC * dset.drF if partial_cell else dset.drF
-    if 'drG' not in coords: # vertical cell size at tracer point
-        coords['drG'] = dset.Zl - dset.Zl + dset.drC.values[:-1]
-        # coords['drG'] = xr.DataArray(dset.drC[:-1].values, dims='Zl',
-        #                              coords={'Zl':dset.Zl.values})
+    # if 'drG' not in coords: # vertical cell size at tracer point  # ldy: commented
+    #     coords['drG'] = dset.Zl - dset.Zl + dset.drC.values[:-1]
+    #     # coords['drG'] = xr.DataArray(dset.drC[:-1].values, dims='Zl',
+    #     #                              coords={'Zl':dset.Zl.values})
     
     if 'dxF' not in coords:
         coords['dxF'] = grid.interp(dset.dxC, 'X')
@@ -320,8 +476,9 @@ def add_MITgcm_missing_metrics(dset, periodic=None, boundary=None, partial_cell=
     
     metrics = {
         ('X',)    : ['dxG', 'dxF', 'dxC', 'dxV'], # X distances
-        # ('Y',)    : ['dyG', 'dyF', 'dyC', 'dyU'], # Y distances
-        ('Z',)    : ['drW', 'drS', 'drC', 'drF', 'drG'], # Z distances
+        ('Y',)    : ['dyG', 'dyF', 'dyC', 'dyU'], # Y distances
+        ('Z',)    : ['drW', 'drS', 'drC', 'drF'], # Z distances # ldy
+        # ('Z',)    : ['drW', 'drS', 'drC', 'drF', 'drG'], # Z distances # ori, ldy: commented
         # ('X', 'Y'): ['rAw', 'rAs', 'rA' , 'rAz'], # Areas in X-Y plane
         ('X', 'Z'): ['yA']} # Areas in X-Z plane
     
@@ -477,11 +634,43 @@ def __dll_dist(dlon, dlat, lon, lat, Rearth=Rearth):
     dy  : xarray.DataArray
         Distance inferred from dlat
     """
-    dx = np.cos(np.deg2rad(lat)) * dlon * deg2m(Rearth=Rearth)
-    dy = (dlat + lon - lon) * deg2m(Rearth=Rearth)
+    degtom = deg2m(Rearth=Rearth)
+    dx = np.cos(np.deg2rad(lat)) * dlon * degtom
+    dy = (dlat + lon - lon) * degtom
     
     # mini-dong: <cos(-90) and >cos(90) is negative
     dx = xr.where(dx<0, -dx, dx)
+    # cos(+/-90) is not exactly zero, add a threshold
+    dx = xr.where(dx<1e-15, 0, dx)
+    
+    return dx, dy
+
+def __dll_dist_old(dlon, dlat, lon, lat):
+    """
+    Converts lat/lon differentials into distances in meters.
+
+    Parameters
+    ----------
+    dlon : xarray.DataArray
+        longitude differentials
+    dlat : xarray.DataArray
+        latitude differentials
+    lon  : xarray.DataArray
+        longitude values
+    lat  : xarray.DataArray
+        latitude values
+
+    Return
+    -------
+    dx  : xarray.DataArray
+        Distance inferred from dlon
+    dy  : xarray.DataArray
+        Distance inferred from dlat
+    """
+    degtom = 2.0 * np.pi * Rearth / 360.0
+    dx = np.cos(np.deg2rad(lat)) * dlon * degtom
+    dy = (dlat + lon - lon) * degtom
+    
     # cos(+/-90) is not exactly zero, add a threshold
     dx = xr.where(dx<1e-15, 0, dx)
     
