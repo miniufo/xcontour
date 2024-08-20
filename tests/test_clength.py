@@ -14,7 +14,7 @@ from xcontour.xcontour import Contour2D, add_latlon_metrics
 dset = xr.open_dataset('./xcontour/Data/barotropic_vorticity.nc')
 
 vor = dset.absolute_vorticity
-vor = (vor - vor + vor.latitude).rename('absolute_vorticity')
+# vor = (vor - vor + vor.latitude).rename('absolute_vorticity')
 # vor[50:100, 256:385] = np.nan
 # vor[50:100, 256] = np.nan
 

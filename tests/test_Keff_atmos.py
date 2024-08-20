@@ -10,6 +10,7 @@ Copyright 2018. All rights reserved. Use is subject to license terms.
 import xarray as xr
 import numpy as np
 from xcontour.xcontour import Contour2D, latitude_lengths_at, add_latlon_metrics
+from xinvert.xinvert import FiniteDiff
 
 dset = xr.open_dataset('./xcontour/Data/PV.nc')
 
@@ -44,6 +45,14 @@ ctr = analysis.cal_contours(N)
 # This can be done analytically in simple case, but we choose to do it
 # numerically in case there are undefined values inside the domain.
 mask = xr.where(tracer!=undef, 1, 0).astype(dtype)
+
+
+#%% calculate Laplacian
+fd = FiniteDiff(dim_mapping={'Y':'latitude', 'X':'longitude'},
+                BCs={'Y':'reflect', 'X':'periodic'},
+                coords='lat-lon')
+
+lap_tr = fd.Laplacian(tracer)
 
 
 #%% calculate related quantities for Keff

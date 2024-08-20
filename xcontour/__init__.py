@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from .core import Contour2D
+from .core import Contour2D, Table
 from .utils import equivalent_latitudes, latitude_lengths_at,\
     add_latlon_metrics, add_MITgcm_missing_metrics, \
     contour_area, contour_length
