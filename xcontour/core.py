@@ -17,17 +17,17 @@ class Contour2D(object):
     """
     This class is designed for performing the 2D contour analysis.
     """
-    def __init__(self, grid, trcr, dims, dimEq, arakawa='A',
+    def __init__(self, trcr, dA, dims, dimEq, arakawa='A',
                  increase=True, lt=False, check_mono=False, dtype=np.float32):
         """
         Construct a Dynamics instance using a Dataset and a tracer
 
         Parameters
         ----------
-        grid: xgcm.Grid
-            a given grid that accounted for grid metrics
         trcr: xarray.DataArray
             A given tracer on the given grid
+        dA: xarray.DataArray
+            Area occupied by each tracer grid point
         dims: dict
             Dimensions along which the min/max values are defined and then
             mapped to the contour space.  Example:
@@ -56,7 +56,7 @@ class Contour2D(object):
         if len(dims) != 2:
             raise Exception('dims should be a 2D plane')
 
-        self.grid    = grid
+        self.dA      = dA
         self.arakawa = arakawa
         self.tracer  = trcr
         self.dims    = dims
@@ -127,10 +127,10 @@ class Contour2D(object):
                 #     print('case 4: decrease & gt')
                 mskVar = mask.where(ctrVar < ctr)
         
-        tbl = abs(self.grid.integrate(mskVar, self.dimNs).rename('AeqCTbl')) \
+        tbl = abs(_integrate(mskVar, self.dA, self.dimNs).rename('AeqCTbl')) \
                     .rename({'contour':self.dimEqV}).squeeze().load()
         
-        maxArea = abs(self.grid.integrate(mask, self.dimNs)).load().squeeze()
+        maxArea = abs(_integrate(mask, self.dA, self.dimNs)).load().squeeze()
         
         # assign the maxArea to the endpoint
         tmp = tbl[{self.dimEqV:-1}] > tbl[{self.dimEqV:0}]
@@ -187,8 +187,7 @@ class Contour2D(object):
         else:
             ylt = not self.lt
         
-        tbl = _histogram(ctrVar, ctr, self.dimVs,
-                         self.grid.get_metric(ctrVar, self.dimNs), # weights
+        tbl = _histogram(ctrVar, ctr, self.dimVs, self.dA, # weights
                          ylt # less than or greater than
                          ).rename('AeqCTbl').rename({'contour':self.dimEqV})\
                           .squeeze().load()
@@ -402,7 +401,7 @@ class Contour2D(object):
             mskVar = integrand.where(tracer > contour)
         
         # conditional integrate (not memory-friendly because of broadcasting)
-        intVar = self.grid.integrate(mskVar, self.dimNs)
+        intVar = _integrate(mskVar, self.dA, self.dimNs)
         
         if self.check_mono:
             _check_monotonicity(intVar, 'contour')
@@ -442,9 +441,9 @@ class Contour2D(object):
         
         # weights are the metrics multiplied by integrand
         if integrand is not None: 
-            wei = self.grid.get_metric(tracer, self.dimNs) * integrand
+            wei = integrand * self.dA
         else:
-            wei = self.grid.get_metric(tracer, self.dimNs)
+            wei = self.dA
         
         # replacing nan with 0 in weights, as weights cannot have nan
         wei = wei.fillna(0.)
@@ -668,7 +667,7 @@ class Contour2D(object):
             isiterable = False
         
         data = self.tracer
-        area = self.grid.get_metric(data, self.dimNs)
+        area = self.dA
         dims = [d for d in data.dims if d in self.dimVs]
         
         if 'X' in self.dims:
@@ -721,7 +720,7 @@ class Contour2D(object):
         masks : list
             A list of mask corresponding to mask_idx.
         """
-        wei  = self.grid.get_metric(q, self.dimNs).squeeze()
+        wei  = self.dA.squeeze()
         wei  = wei / wei.max() # normalize between [0-1], similar to cos(lat)
         part = part.lower()
         # q2 = q.squeeze()
@@ -787,7 +786,7 @@ class Contour2D(object):
             # perform area-weighted conditional integration
             # lwa = (qe * maskFinal * wei *
             #        self.grid.get_metric(qe, self.dimEqN)).sum(self.dimEqV)
-            lwa = -self.grid.integrate(qe * maskFinal * wei, self.dimEqN)
+            lwa = -_integrate(qe * maskFinal * wei, self.dA, self.dimEqN)
             
             tmp.append(lwa)
         
@@ -827,7 +826,7 @@ class Contour2D(object):
         masks : list
             A list of mask corresponding to mask_idx.
         """
-        wei  = self.grid.get_metric(q, self.dimNs).squeeze()
+        wei  = self.dA.squeeze()
         wei  = wei / wei.max() # normalize between [0-1], similar to cos(lat)
         part = part.lower()
         # q2 = q.squeeze()
@@ -893,7 +892,7 @@ class Contour2D(object):
             # perform area-weighted conditional integration
             # lwa = (qe * maskFinal * wei *
             #        self.grid.get_metric(qe, self.dimEqN)).sum(self.dimEqV)
-            lwa = -self.grid.integrate(qe * maskFinal * wei, self.dimEqN)
+            lwa = -_integrate(qe * maskFinal * wei, self.dA, self.dimEqN)
             
             tmp.append(lwa)
         
@@ -1354,6 +1353,29 @@ def _check_monotonicity(var, dim):
                 v = var.isel({tmp:pos[tmp].values}).load()
         
         raise Exception('not monotonic var at\n' + str(v))
+
+
+def _integrate(var, dA, dims):
+    """
+    Integration of var over the whole domain.
+    
+    Parameters
+    ----------
+    var: xarray.DataArray
+        A given variable as the integrand.
+    dA: xarray.DataArray
+        Area occupied by each grid point.
+    dims: list of str
+        A string indicate the dimension.
+    
+    Returns
+    ----------
+    re: xarray.DataArray
+        Integrated result.
+    """
+    re = (var * dA).sum(dims)
+    
+    return re
 
 
 def _get_extrema_extend(data, N):
