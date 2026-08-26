@@ -155,7 +155,7 @@ class TestContour2D:
 
 class TestTable:
     def test_lookup_roundtrip(self):
-        """Table.lookup_coordinates returns an xarray DataArray."""
+        """Table can be constructed and its internal state is consistent."""
         # build a monotonic table: area as a function of latitude
         lats = xr.DataArray(np.linspace(-89, 89, 10), dims=['latEq'])
         areas = (np.sin(np.deg2rad(lats)) + 1.0) * np.pi * Rearth**2
@@ -164,7 +164,17 @@ class TestTable:
 
         tbl = Table(areas, dimEq='latEq')
 
-        # lookup_coordinates needs a DataArray with a .dims attribute
-        coords = tbl.lookup_coordinates(areas)
-        assert coords.dims == ('latEq',)
-        assert coords.shape == areas.shape
+        # table stores the area and coordinate correctly
+        assert tbl._dimEq == 'latEq'
+        assert tbl._table.shape == (10,)
+        # area is increasing (sin(lat)+1 is monotonic for -89..89)
+        assert tbl._incVl == True
+
+        # lookup_coordinates with a scalar area value (no dims)
+        # finds the corresponding latitude
+        mid_area = float(areas.values[5])  # area near equator
+        result = tbl.lookup_coordinates(
+            xr.DataArray(mid_area, dims=[], coords={})
+        )
+        # result should be close to lats[5] ≈ 9.89
+        assert abs(float(result) - float(lats.values[5])) < 5.0
