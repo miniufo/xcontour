@@ -29,11 +29,14 @@ setup(
     license='MIT',
 
     classifiers=[
-        'Programming Language :: Python :: 3.6',
-        'Programming Language :: Python :: 3.7'
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
     ],
 
-    keywords='contour xarray dask numpy',
+    keywords='contour xarray dask numpy numba xgcm',
 
     packages=find_packages(exclude=['docs', 'tests', "notebooks", "pics"]),
 
@@ -41,6 +44,9 @@ setup(
         "numpy",
         "xarray",
         "dask",
+        "numba",
         "xhistogram",
+        "scikit-image",
+        "xgcm",
     ],
 )
