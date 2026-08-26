@@ -43,18 +43,19 @@ def small_dA(small_grid):
 @pytest.fixture
 def simple_tracer():
     """A minimal 2D tracer with uniform area — enough for Contour2D init."""
-    lats = xr.DataArray(np.linspace(-80, 80, 17), dims=['lat'], name='lat')
-    lons = xr.DataArray(np.linspace(0, 360, 18)[:-1], dims=['lon'], name='lon')
+    nlat, nlon = 17, 18
+    lats = xr.DataArray(np.linspace(-80, 80, nlat), dims=['lat'], name='lat')
+    lons = xr.DataArray(np.linspace(0, 360, nlon + 1)[:-1], dims=['lon'], name='lon')
 
     dA = xr.DataArray(
-        np.ones((17, 18), dtype=np.float32),
+        np.ones((nlat, nlon), dtype=np.float32),
         dims=['lat', 'lon'],
         coords={'lat': lats, 'lon': lons},
         name='dA'
     )
 
     tracer = xr.DataArray(
-        200 + 50 * np.sin(np.deg2rad(lats)).values[:, None] * np.ones(18),
+        200 + 50 * np.sin(np.deg2rad(lats)).values[:, None] * np.ones(nlon),
         dims=['lat', 'lon'],
         coords={'lat': lats, 'lon': lons},
         name='theta'
@@ -92,13 +93,18 @@ class TestImport:
 
 class TestUtils:
     def test_equivalent_latitudes(self):
-        """Equivalent latitude formula: 2*pi*a^2*(sin(lat)+1) = area."""
-        areas = xr.DataArray(np.array([0.0, 0.5, 1.0]) * 2 * np.pi * Rearth**2,
-                             dims=['contour'])
+        """Equivalent latitude formula: area = 2*pi*a^2*(sin(latEq)+1)."""
+        # 0 area → latEq=-90; half-sphere area (2*pi*a^2) → latEq=0;
+        # full-sphere area (4*pi*a^2) → latEq=+90
+        areas = xr.DataArray(
+            np.array([0.0, 1.0, 2.0]) * 2 * np.pi * Rearth**2,
+            dims=['contour']
+        )
         lats = equivalent_latitudes(areas)
         assert lats.shape == (3,)
-        assert abs(lats.values[0] - (-90.0)) < 1.0  # zero area → south pole
-        assert abs(lats.values[-1] - (90.0)) < 1.0   # full area → north pole
+        assert abs(lats.values[0]  - (-90.0)) < 1.0  # zero area → south pole
+        assert abs(lats.values[1]  - (  0.0)) < 1.0  # half sphere → equator
+        assert abs(lats.values[-1] - ( 90.0)) < 1.0  # full sphere → north pole
 
     def test_latitude_lengths_at(self):
         """Minimum contour length on a sphere given latitudes."""
@@ -149,7 +155,7 @@ class TestContour2D:
 
 class TestTable:
     def test_lookup_roundtrip(self):
-        """Table.lookup_coordinates and lookup_values are inverse operations."""
+        """Table.lookup_coordinates returns an xarray DataArray."""
         # build a monotonic table: area as a function of latitude
         lats = xr.DataArray(np.linspace(-89, 89, 10), dims=['latEq'])
         areas = (np.sin(np.deg2rad(lats)) + 1.0) * np.pi * Rearth**2
@@ -158,6 +164,7 @@ class TestTable:
 
         tbl = Table(areas, dimEq='latEq')
 
-        # round-trip: area → lat → area
-        coords = tbl.lookup_coordinates(areas.values)
+        # lookup_coordinates needs a DataArray with a .dims attribute
+        coords = tbl.lookup_coordinates(areas)
+        assert coords.dims == ('latEq',)
         assert coords.shape == areas.shape
