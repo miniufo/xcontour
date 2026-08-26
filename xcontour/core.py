@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-Created on 2020.02.05
+Core module of xcontour: 2D contour-based coordinate diagnostics.
 
-@author: MiniUFO
-Copyright 2018. All rights reserved. Use is subject to license terms.
+This module implements the ``Contour2D`` and ``Table`` classes for
+adiabatic sorting, contour-enclosed integrals, equivalent-length and
+local wave activity / APE calculations in contour-based coordinates.
 """
 import numpy as np
 import numba as nb
 import xarray as xr
 from xhistogram.xarray import histogram
 from skimage import measure
-from .utils import contour_length
+from .utils import contour_length, Rearth
 
 
 class Contour2D(object):
@@ -29,14 +30,12 @@ class Contour2D(object):
         dA: xarray.DataArray
             Area occupied by each tracer grid point
         dims: dict
-            Dimensions along which the min/max values are defined and then
-            mapped to the contour space.  Example:
-                dims = {'X': 'lon', 'Y': 'lat', 'Z': 'Z'}
-            Note that only 2D (e.g., X-Y horizontal or X-Z, Y-Z vertical planes)
-            is allowed for this class.
+            2D dimensions over which the min/max values are defined and then
+            mapped to the 1D contour space.  Example:
+                dims = {'lon', 'lat'}
         dimEq: dict
             Equivalent dimension that should be mapped from contour space.
-            Example: dimEq = {'Y': 'lat'} or dimEq = {'Z', 'depth'}
+            Example: dimEq = {'lat'} or dimEq = {'depth'}
         arakawa: str
             The type of the grid in ['A', 'C']. Reference:
                 https://db0nus869y26v.cloudfront.net/en/Arakawa_grids
@@ -49,10 +48,6 @@ class Contour2D(object):
         check_mono: bool
             Check the monotonicity of the result or not (default: False).
         """
-
-        if len(dimEq) != 1:
-            raise Exception('dimEq should be one dimension e.g., {"Y","lat"}')
-
         if len(dims) != 2:
             raise Exception('dims should be a 2D plane')
 
@@ -60,10 +55,7 @@ class Contour2D(object):
         self.arakawa = arakawa
         self.tracer  = trcr
         self.dims    = dims
-        self.dimNs   = list(dims.keys())      # dim names,  ['X', 'Y', 'Z']
-        self.dimVs   = list(dims.values())    # dim values, ['lon', 'lat', 'Z']
-        self.dimEqN  = list(dimEq.keys())[0]  # equiv. dim name
-        self.dimEqV  = list(dimEq.values())[0]# equiv. dim value
+        self.dimEq   = dimEq  # equiv. dim name
         self.lt      = lt
         self.dtype   = dtype
         self.check_mono = check_mono
@@ -94,9 +86,9 @@ class Contour2D(object):
             table will be used to represent the relation of A(Yeq) or its
             inverse relation Yeq(A), if equivalent dimension is Yeq.
         """
-        ctr = mask[self.dimEqV].copy().rename({self.dimEqV:'contour'}) \
+        ctr = mask[self.dimEq].copy().rename({self.dimEq:'contour'}) \
                                       .rename('contour')
-        ctrVar, _ = xr.broadcast(mask[self.dimEqV], mask)
+        ctrVar, _ = xr.broadcast(mask[self.dimEq], mask)
         
         eqDimIncre = ctr[-1] > ctr[0]
         
@@ -127,24 +119,24 @@ class Contour2D(object):
                 #     print('case 4: decrease & gt')
                 mskVar = mask.where(ctrVar < ctr)
         
-        tbl = abs(_integrate(mskVar, self.dA, self.dimNs).rename('AeqCTbl')) \
-                    .rename({'contour':self.dimEqV}).squeeze().load()
+        tbl = abs(_integrate(mskVar, self.dA, self.dims).rename('AeqCTbl')) \
+                    .rename({'contour':self.dimEq}).squeeze().load()
         
-        maxArea = abs(_integrate(mask, self.dA, self.dimNs)).load().squeeze()
+        maxArea = abs(_integrate(mask, self.dA, self.dims)).load().squeeze()
         
         # assign the maxArea to the endpoint
-        tmp = tbl[{self.dimEqV:-1}] > tbl[{self.dimEqV:0}]
+        tmp = tbl[{self.dimEq:-1}] > tbl[{self.dimEq:0}]
         if   (tmp == True ).all():
-            tbl[{self.dimEqV:-1}] = maxArea
+            tbl[{self.dimEq:-1}] = maxArea
         elif (tmp == False).all():
-            tbl[{self.dimEqV: 0}] = maxArea
+            tbl[{self.dimEq: 0}] = maxArea
         else:
             raise Exception('not every time or level is increasing/decreasing')
         
         if self.check_mono:
             _check_monotonicity(tbl, 'contour')
         
-        return Table(tbl, self.dimEqV)
+        return Table(tbl, self.dimEq)
     
     
     def cal_area_eqCoord_table_hist(self, mask):
@@ -171,9 +163,9 @@ class Contour2D(object):
             table will be used to represent the relation of A(Yeq) or its
             inverse relation Yeq(A), if equivalent dimension is Yeq.
         """
-        ctr = mask[self.dimEqV].copy().rename({self.dimEqV:'contour'}) \
+        ctr = mask[self.dimEq].copy().rename({self.dimEq:'contour'}) \
                                       .rename('contour')
-        ctrVar, _ = xr.broadcast(mask[self.dimEqV], mask)
+        ctrVar, _ = xr.broadcast(mask[self.dimEq], mask)
         
         ctrVar = ctrVar.where(mask==1)
         
@@ -187,20 +179,20 @@ class Contour2D(object):
         else:
             ylt = not self.lt
         
-        tbl = _histogram(ctrVar, ctr, self.dimVs, self.dA, # weights
+        tbl = _histogram(ctrVar, ctr, self.dims, self.dA, # weights
                          ylt # less than or greater than
-                         ).rename('AeqCTbl').rename({'contour':self.dimEqV})\
+                         ).rename('AeqCTbl').rename({'contour':self.dimEq})\
                           .squeeze().load()
         
         if yIncre:
-            tbl = tbl.assign_coords({self.dimEqV:ctr.values}).squeeze()
+            tbl = tbl.assign_coords({self.dimEq:ctr.values}).squeeze()
         else:
-            tbl = tbl.assign_coords({self.dimEqV:ctr.values[::-1]}).squeeze()
+            tbl = tbl.assign_coords({self.dimEq:ctr.values[::-1]}).squeeze()
         
         if self.check_mono:
             _check_monotonicity(tbl, 'contour')
         
-        return Table(tbl, self.dimEqV)
+        return Table(tbl, self.dimEq)
 
     def cal_contours(self, levels=10):
         """
@@ -221,8 +213,8 @@ class Contour2D(object):
         """
         if type(levels) is int:
             # specifying number of contours
-            mmin = self.tracer.min(dim=self.dimVs)
-            mmax = self.tracer.max(dim=self.dimVs)
+            mmin = self.tracer.min(dim=self.dims)
+            mmax = self.tracer.max(dim=self.dims)
 
             # if numpy.__version__ > 1.16, use numpy.linspace instead
             def mylinspace(start, stop, levels):
@@ -254,7 +246,7 @@ class Contour2D(object):
                 return tracer[..., None] - tracer[..., None] + levs
 
             ctr = xr.apply_ufunc(mylinspace,
-                                 self.tracer.min(dim=self.dimVs), levels,
+                                 self.tracer.min(dim=self.dims), levels,
                                  dask='allowed',
                                  input_core_dims=[[], []],
                                  vectorize=True,
@@ -360,7 +352,8 @@ class Contour2D(object):
         return qIntp
 
 
-    def cal_integral_within_contours(self, contour, tracer=None, integrand=None):
+    def cal_integral_within_contours(self, contour, tracer=None, integrand=None,
+                                     extracond=None):
         """
         Calculate conditional integral of a (masked) variable within each
         pre-calculated tracer contour.
@@ -376,6 +369,8 @@ class Contour2D(object):
         integrand: xarray.DataArray
             A given variable in dset.  If None, area enclosed by contour
             will be calculated and returned
+        extracond: xarray.DataArray
+            Extra condition for integration.
 
         Returns
         ----------
@@ -396,12 +391,22 @@ class Contour2D(object):
             integrand = tracer - tracer + 1
 
         if self.lt: # this allocates large memory, xhistogram works better
-            mskVar = integrand.where(tracer < contour)
+            cond = tracer < contour
+            
+            if extracond is not None:
+                cond = np.logical_and(cond, extracond)
+                
+            mskVar = integrand.where(cond)
         else:
-            mskVar = integrand.where(tracer > contour)
+            cond = tracer > contour
+            
+            if extracond is not None:
+                cond = np.logical_and(cond, extracond)
+            
+            mskVar = integrand.where(cond)
         
         # conditional integrate (not memory-friendly because of broadcasting)
-        intVar = _integrate(mskVar, self.dA, self.dimNs)
+        intVar = _integrate(mskVar, self.dA, self.dims)
         
         if self.check_mono:
             _check_monotonicity(intVar, 'contour')
@@ -410,7 +415,7 @@ class Contour2D(object):
 
 
     def cal_integral_within_contours_hist(self, contour, tracer=None,
-                                          integrand=None):
+                                          integrand=None, extracond=None):
         """
         Calculate integral of a masked variable within
         pre-calculated tracer contours, using histogram method.
@@ -429,6 +434,8 @@ class Contour2D(object):
         integrand: xarray.DataArray
             A given variable.  If None, area enclosed by contour
             will be calculated and returned
+        extracond: xarray.DataArray
+            Extra condition for integration.
 
         Returns
         ----------
@@ -448,7 +455,10 @@ class Contour2D(object):
         # replacing nan with 0 in weights, as weights cannot have nan
         wei = wei.fillna(0.)
         
-        CDF = _histogram(tracer, contour, self.dimVs, wei, self.lt)
+        if extracond is None:
+            CDF = _histogram(tracer, contour, self.dims, wei, self.lt)
+        else:
+            CDF = _histogram(tracer.where(extracond), contour, self.dims, wei, self.lt)
         
         # ensure that the contour index is increasing
         if CDF['contour'][-1] < CDF['contour'][0]:
@@ -668,7 +678,7 @@ class Contour2D(object):
         
         data = self.tracer
         area = self.dA
-        dims = [d for d in data.dims if d in self.dimVs]
+        dims = [d for d in data.dims if d in self.dims]
         
         if 'X' in self.dims:
             dataPad = data.pad({self.dims['X']:(0, maxStride)}, mode=mode)
@@ -693,7 +703,7 @@ class Contour2D(object):
             return re[0]
     
     
-    def cal_local_wave_activity(self, q, Q, mask_idx=None, part='all'):
+    def cal_local_wave_activity(self, q, Q, R=Rearth, mask_idx=None, part='all'):
         """
         Calculate local finite-amplitude wave activity density.
         Reference: Huang and Nakamura 2016, JAS
@@ -723,9 +733,8 @@ class Contour2D(object):
         wei  = self.dA.squeeze()
         wei  = wei / wei.max() # normalize between [0-1], similar to cos(lat)
         part = part.lower()
-        # q2 = q.squeeze()
         
-        eqDim = q[self.dimEqV]
+        eqDim = q[self.dimEq]
         eqDimLen = len(eqDim)
         tmp = []
         
@@ -751,7 +760,7 @@ class Contour2D(object):
         # loop for each contour (or each equivalent dimension surface)
         for j in range(eqDimLen):
             # deviation from the reference
-            qe = q - Q.isel({self.dimEqV:j})
+            qe = q - Q.isel({self.dimEq:j})
             
             # above or below the reference coordinate surface
             m = eqDim>=eqDim.values[j] if coord_incre else eqDim<=eqDim.values[j]
@@ -766,7 +775,7 @@ class Contour2D(object):
                 mask3 = xr.where(np.logical_and(qe>0, m), 1, mask2)
             
             if j in mask_idx:
-                contours.append(Q.isel({self.dimEqV:j}))
+                contours.append(Q.isel({self.dimEq:j}))
                 masks.append(mask3)
             
             # select part over which integration is performed
@@ -784,14 +793,16 @@ class Contour2D(object):
                     maskFinal = mask3.where(mask3>0)
             
             # perform area-weighted conditional integration
-            # lwa = (qe * maskFinal * wei *
-            #        self.grid.get_metric(qe, self.dimEqN)).sum(self.dimEqV)
-            lwa = -_integrate(qe * maskFinal * wei, self.dA, self.dimEqN)
+            lwa = -_integrate(qe * maskFinal * wei, self.dA, self.dimEq)
             
             tmp.append(lwa)
         
-        LWA = xr.concat(tmp, self.dimEqV).transpose(*(q.dims))
-        LWA[self.dimEqV] = eqDim.values
+        LWA = xr.concat(tmp, self.dimEq).transpose(*(q.dims))
+        LWA[self.dimEq] = eqDim.values
+        
+        # divided by dx
+        dname = self.dims[1] if self.dimEq == self.dims[0] else self.dims[0]
+        LWA /= LWA[dname].diff(dname)[0] * np.pi * R / 180 * np.cos(np.deg2rad(LWA[self.dimEq]))
         
         if returnmask:
             return LWA.rename('LWA'), contours, masks
@@ -799,7 +810,7 @@ class Contour2D(object):
             return LWA.rename('LWA')
 
 
-    def cal_local_wave_activity2(self, q, Q, mask_idx=None, part='all'):
+    def cal_local_wave_activity2(self, q, Q, Y, mask_idx=None, part='all'):
         """
         Calculate local finite-amplitude wave activity density.
         Reference: Huang and Nakamura 2016, JAS
@@ -829,9 +840,8 @@ class Contour2D(object):
         wei  = self.dA.squeeze()
         wei  = wei / wei.max() # normalize between [0-1], similar to cos(lat)
         part = part.lower()
-        # q2 = q.squeeze()
         
-        eqDim = q[self.dimEqV]
+        eqDim = q[self.dimEq]
         eqDimLen = len(eqDim)
         tmp = []
         
@@ -853,16 +863,16 @@ class Contour2D(object):
             if max(mask_idx) >= len(eqDim):
                 raise Exception('indices in mask_idx out of boundary')
             returnmask = True
-        
+
         # loop for each contour (or each equivalent dimension surface)
         for j in range(eqDimLen):
             # deviation from the reference
-            qe = q.isel({self.dimEqV:j}) - Q
+            qe = Y - eqDim.isel({self.dimEq:j})
             
             # above or below the reference coordinate surface
             m = eqDim>=eqDim.values[j] if coord_incre else eqDim<=eqDim.values[j]
             
-            if not self.increase:
+            if self.increase:
                 mask1 = xr.where(qe>0, -1, 0)
                 mask2 = xr.where(m, 0, mask1).transpose(*(mask1.dims))
                 mask3 = xr.where(np.logical_and(qe<0, m), 1, mask2)
@@ -872,7 +882,7 @@ class Contour2D(object):
                 mask3 = xr.where(np.logical_and(qe>0, m), 1, mask2)
             
             if j in mask_idx:
-                contours.append(Q.isel({self.dimEqV:j}))
+                contours.append(Q.isel({self.dimEq:j}))
                 masks.append(mask3)
             
             # select part over which integration is performed
@@ -890,14 +900,12 @@ class Contour2D(object):
                     maskFinal = mask3.where(mask3>0)
             
             # perform area-weighted conditional integration
-            # lwa = (qe * maskFinal * wei *
-            #        self.grid.get_metric(qe, self.dimEqN)).sum(self.dimEqV)
-            lwa = -_integrate(qe * maskFinal * wei, self.dA, self.dimEqN)
+            lwa = -_integrate(qe * maskFinal * wei, self.dA, self.dimEq)
             
             tmp.append(lwa)
         
-        LWA = xr.concat(tmp, self.dimEqV).transpose(*(q.dims))
-        LWA[self.dimEqV] = eqDim.values
+        LWA = xr.concat(tmp, self.dimEq).transpose(*(q.dims))
+        LWA[self.dimEq] = eqDim.values
         
         if returnmask:
             return LWA.rename('LWA'), contours, masks
@@ -992,7 +1000,7 @@ class Contour2D(object):
         
         ordered = []
         for dim in self.tracer.dims:
-            if dim in self.dimVs:
+            if dim in self.dims:
                 ordered.append(dim)
         
         if tracer is None:
@@ -1192,8 +1200,7 @@ class Table(object):
         if isinstance(re, np.ndarray):
             re = xr.DataArray(re, dims=coords.dims, coords=coords.coords)
         
-        return re
-        
+        return re       
 
 
 """

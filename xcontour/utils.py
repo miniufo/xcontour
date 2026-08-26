@@ -1,20 +1,21 @@
 # -*- coding: utf-8 -*-
-'''
-Created on 2020.02.04
+"""
+Utility module of xcontour: constants, grid metrics, and contour-length helpers.
 
-@author: MiniUFO
-Copyright 2018. All rights reserved. Use is subject to license terms.
-'''
+Defines Earth-science constants (``Rearth``, ``g``, ``omega``), grid-metric
+builders for lat/lon and MITgcm datasets, equivalent-latitude formulas, and
+geodesic / contour-length helpers used by :mod:`xcontour.core`.
+"""
 import numpy as np
 import numba as nb
 import xarray as xr
 from xgcm import Grid
-from xgcm.autogenerate import generate_grid_ds
+# from xgcm.autogenerate import generate_grid_ds
 
 
-'''
+"""
 Here defines all the constants that are commonly used in earth sciences
-'''
+"""
 # Radius of the Earth (m)
 Rearth = 6371200.0
 
@@ -37,6 +38,39 @@ dimYList = ['lat', 'latitude' , 'LAT', 'LATITUDE' , 'geolat', 'GEOLAT',
             'yt_ocean']
 dimZList = ['lev', 'level', 'LEV', 'LEVEL', 'pressure', 'PRESSURE',
             'depth', 'DEPTH']
+
+
+def cal_dA(lons, lats, R=Rearth):
+    """
+    Calculate area element for each lat/lon grid point.
+    This is on a Arakawa-A grid and each point is at the center.
+
+    Parameters
+    ----------
+    lons: xarray.DataArray
+        A uniform 1D longitude (degree).
+    lats: xarray.DataArray
+        A uniform 1D latitude (degree).
+    R: float
+        Radius of the earth.
+
+    Return
+    -------
+    dA: xarray.DataArray
+        Areal of each lat/lon grid point
+    """
+    dlon = lons.diff(lons.name).values[0] / 2.0
+    dlat = lats.diff(lats.name).values[0] / 2.0
+    
+    dA = R**2 * np.abs(np.sin(np.deg2rad(lats + dlat))-np.sin(np.deg2rad(lats - dlat))) * np.deg2rad(lons-lons+dlon) * 2.0
+    
+    if lats[0] == -90:
+        dA[0]  = R**2 * np.abs(np.sin(np.deg2rad(lats[0] + dlat)) + 1.0) * np.deg2rad(lons-lons+dlon) * 2.0
+        
+    if lats[-1] == 90:
+        dA[-1] = R**2 * np.abs(1.0 - np.sin(np.deg2rad(lats[-1] - dlat))) * np.deg2rad(lons-lons+dlon) * 2.0
+    
+    return dA
 
 
 
@@ -529,7 +563,7 @@ def latitude_lengths_at(lats, Rearth=Rearth):
     Lmin : xarray.DataArray
         The minimum possible length of the contour.
     """
-    Lmin = (2.0 * np.pi * Rearth * np.cos(np.deg2rad(lats))).astype(lats.dtype)
+    Lmin = (np.cos(np.deg2rad(lats)) * 2.0 * np.pi * Rearth)
 
     return Lmin
 
@@ -761,9 +795,9 @@ def __geodist(lon1, lon2, lat1, lat2):
     return dis
 
 
-'''
+"""
 Testing codes for each class
-'''
+"""
 if __name__ == '__main__':
     print('start testing in ContourUtils.py')
     

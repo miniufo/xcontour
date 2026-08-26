@@ -1,7 +1,12 @@
 # xcontour
 
 [![DOI](https://zenodo.org/badge/473022002.svg)](https://zenodo.org/badge/latestdoi/473022002)
-![GitHub](https://img.shields.io/github/license/miniufo/xcontour)
+[![Docs](https://readthedocs.org/projects/xcontour/badge/?version=latest)](https://xcontour.readthedocs.io/en/latest/)
+[![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![PyPI version](https://badge.fury.io/py/xcontour.svg)](https://badge.fury.io/py/xcontour)
+[![Publish to PyPI](https://github.com/miniufo/xcontour/actions/workflows/PyPI-publish.yml/badge.svg)](https://github.com/miniufo/xcontour/actions/workflows/PyPI-publish.yml)
+[![pytest](https://github.com/miniufo/xcontour/actions/workflows/tests.yml/badge.svg)](https://github.com/miniufo/xcontour/actions/workflows/tests.yml)
 
 ![diagnostic analyses in contour-based coordinate](./pics/sorting.jpg)
 

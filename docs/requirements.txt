@@ -1,0 +1,8 @@
+xarray
+numpy
+numba
+xhistogram
+scikit-image
+nbsphinx
+numpydoc
+sphinx-rtd-theme
